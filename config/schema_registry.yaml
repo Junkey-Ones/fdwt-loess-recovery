@@ -1,0 +1,700 @@
+schema_version: v1.3.1
+tables:
+  source_file_manifest:
+    columns:
+    - file_id
+    - product_code
+    - collection_version
+    - native_variable_names
+    - time_start
+    - time_end
+    - download_date
+    - request_id
+    - source_url
+    - file_path
+    - file_size_bytes
+    - sha256
+    - spatial_extent
+    - native_resolution
+    - crs
+    - lat_direction
+    - lon_direction
+    - time_zone
+    - timestamp_meaning
+    - accumulation_type
+    - unit_source
+    - scale_factor
+    - add_offset
+    - fill_value
+    - license
+    - access_status
+    - audit_status
+    - audit_note
+    primary_key:
+    - file_id
+  source_variable_map:
+    columns:
+    - mapping_id
+    - product_code
+    - collection_version
+    - native_variable_name
+    - canonical_field
+    - native_unit
+    - canonical_unit
+    - scale_factor
+    - add_offset
+    - sign_rule
+    - accumulation_type
+    - qc_fields
+    - metadata_source
+    - verified_by
+    - verification_date
+    - mapping_status
+    - note
+    primary_key:
+    - mapping_id
+  time_pentad_calendar:
+    columns:
+    - t_abs
+    - year
+    - pentad
+    - start_date
+    - end_date
+    - n_days
+    - is_leap_year
+    - is_pentad73
+    - previous_t_abs
+    - next_t_abs
+    primary_key:
+    - t_abs
+  grid_manifest:
+    columns:
+    - grid_version
+    - grid_id
+    - lon
+    - lat
+    - area_km2
+    - boundary_include
+    - block_id
+    - superblock_id
+    - native_gldas_grid_id
+    - grid_geometry_id
+    - valid_area_fraction
+    - grid_qc_status
+    primary_key:
+    - grid_version
+    - grid_id
+  grid_day:
+    columns:
+    - product_code
+    - grid_version
+    - grid_id
+    - date
+    - support_id
+    - sm_0_100_mm
+    - sm_deep_mm
+    - p_mm
+    - et_loss_mm
+    - pet_loss_mm
+    - runoff_surface_mm
+    - runoff_subsurface_mm
+    - runoff_mm
+    - balance_mm
+    - t2m_c
+    - valid_native_area_frac
+    - qc_status
+    - missing_reason
+    primary_key:
+    - product_code
+    - grid_version
+    - grid_id
+    - date
+    - support_id
+  grid_pentad_base:
+    columns:
+    - product_code
+    - grid_version
+    - grid_id
+    - t_abs
+    - year
+    - pentad
+    - support_id
+    - start_date
+    - end_date
+    - n_days
+    - sm_0_100_mm
+    - sm_deep_mm
+    - p_mm
+    - p_mm_per_day
+    - p_5day_equivalent_mm
+    - et_loss_mm
+    - pet_loss_mm
+    - runoff_surface_mm
+    - runoff_subsurface_mm
+    - runoff_mm
+    - balance_mm
+    - t2m_c
+    - state_valid_days
+    - state_max_consecutive_missing_days
+    - flux_complete_flag
+    - valid_native_area_frac
+    - qc_status
+    - missing_reason
+    primary_key:
+    - product_code
+    - grid_version
+    - grid_id
+    - t_abs
+    - support_id
+  grid_mask:
+    columns:
+    - grid_version
+    - grid_id
+    - mask_version
+    - valid_landcover_years
+    - native_exclude_frac
+    - vegetation_area_frac
+    - mask_include
+    - baseline_land_cover
+    - land_cover
+    - exclusion_reason
+    - baseline_mask_flag
+    - no_landcover_mask_flag
+    primary_key:
+    - grid_version
+    - grid_id
+    - mask_version
+  grid_phenology_year:
+    columns:
+    - grid_version
+    - grid_id
+    - year
+    - phenology_mode
+    - cycle_id
+    - greenup_date
+    - dormancy_date
+    - greenup_doy
+    - dormancy_doy
+    - num_cycles
+    - evi_amplitude
+    - qa_overall
+    - qa_detailed
+    - valid_pixel_area_frac
+    - valid_native_pixels
+    - valid_phenology_years
+    - phenology_fallback
+    - active_window_start
+    - active_window_end
+    - phenology_qc_status
+    - exclusion_reason
+    primary_key:
+    - grid_version
+    - grid_id
+    - year
+    - phenology_mode
+  grid_active_pentad:
+    columns:
+    - grid_version
+    - grid_id
+    - t_abs
+    - year
+    - pentad
+    - phenology_mode
+    - active_flag
+    - active_window_id
+    - phenology_fallback
+    - active_window_length_L
+    - selection_sensitivity_group
+    primary_key:
+    - grid_version
+    - grid_id
+    - t_abs
+    - phenology_mode
+  grid_climatology:
+    columns:
+    - product_code
+    - grid_version
+    - grid_id
+    - pentad
+    - clim_version
+    - clim_start_year
+    - clim_end_year
+    - pool_offset
+    - sm_n
+    - balance_n
+    - p_n
+    - p_nonzero_n
+    - p_zero_fraction
+    - p95_mm
+    - p99_mm
+    - wet_p95_mm
+    - p95_usable
+    - sm_distribution_id
+    - balance_distribution_id
+    - pentad73_check_status
+    - climatology_qc_status
+    primary_key:
+    - product_code
+    - grid_version
+    - grid_id
+    - pentad
+    - clim_version
+  grid_pentad:
+    columns:
+    - product_combo
+    - soil_product
+    - precip_product
+    - grid_version
+    - grid_id
+    - t_abs
+    - year
+    - pentad
+    - start_date
+    - end_date
+    - n_days
+    - support_id
+    - phenology_mode
+    - clim_version
+    - active_flag
+    - active_window_length_L
+    - phenology_fallback
+    - sm_0_100_mm
+    - smp
+    - sm_rank_n
+    - p_mm
+    - p_mm_per_day
+    - p_5day_equivalent_mm
+    - p95_mm
+    - p95_n
+    - p_nonzero_n
+    - p95_usable
+    - et_loss_mm
+    - runoff_mm
+    - balance_mm
+    - balance_rank_n
+    - balance_p
+    - w
+    - sm_deep_mm
+    - valid_native_area_frac
+    - qc_status
+    - missing_reason
+    primary_key:
+    - product_combo
+    - grid_version
+    - grid_id
+    - t_abs
+    - support_id
+    - phenology_mode
+    - clim_version
+  event_master:
+    columns:
+    - LAI_base
+    - LAI_trend
+    - LAI_exposure_cluster
+    - NDVI_base
+    - NDVI_trend
+    - deep_SM_pre4
+    - shallow_SM_pre4
+    primary_key:
+    - episode_id
+  event_candidate_audit:
+    columns:
+    - candidate_id
+    - product
+    - grid_id
+    - t_s_candidate
+    - t_min_candidate
+    - t_e_candidate
+    - smp_above_anchor
+    - smp_min
+    - development_rate
+    - duration_observed
+    - continuity_ok
+    - active_window_ok
+    - eligible_main
+    - exclusion_reason
+    - code_version
+    primary_key:
+    - candidate_id
+  event_precip:
+    columns:
+    - episode_id
+    - t_abs
+    - year
+    - pentad
+    - p_mm
+    - p95_mm
+    - p99_mm
+    - p_mm_per_day
+    - p_5day_equivalent_mm
+    - p95_qualify
+    - p99_qualify
+    - in_pterm_window
+    - in_fr_window
+    - is_first_pterm
+    - is_first_fr
+    - pentad73_flag
+    - precip_qc_status
+    primary_key:
+    - episode_id
+    - t_abs
+    - p_term_definition
+  event_branch:
+    columns:
+    - episode_id
+    - branch
+    - branch_definition
+    - t_w
+    - W1
+    - W2
+    - DFAI_alpha
+    - DFAI
+    - E2a_eligible
+    - wet_process_id
+    - window_status
+    - branch_available
+    - missing_reason
+    primary_key:
+    - episode_id
+    - branch
+    - branch_definition
+  event_recovery_trajectory:
+    columns:
+    - episode_id
+    - t_abs
+    - relative_to_tmin
+    - relative_to_te
+    - smp
+    - recovery_phase_flag
+    - early_recovery_flag
+    - post_te_flag
+    - active_flag
+    - qc_status
+    primary_key:
+    - episode_id
+    - t_abs
+  route1_recovery_person_pentad:
+    columns:
+    - episode_id
+    - t0_tmin
+    - followup_pentad
+    - t_abs
+    - at_risk
+    - recovery_event
+    - censor_administrative
+    - censor_missing
+    - censor_data_end
+    - censor_reason
+    - last_valid_t_abs
+    - smp
+    - active_flag
+    - exposure_version
+    - analysis_weight
+    primary_key:
+    - episode_id
+    - followup_pentad
+  vegetation_grid_year:
+    columns:
+    - grid_id
+    - year
+    - vegetation_product
+    - phenology_mode
+    - mask_version
+    - qc_version
+    - vegetation_annual_mean
+    - active_pentad_n
+    - valid_pentad_n
+    - temporal_coverage
+    - native_valid_area
+    - total_native_area
+    - spatial_coverage
+    - annual_valid
+    - strict_qc_flag
+    - exclusion_reason
+    primary_key:
+    - grid_id
+    - year
+    - vegetation_product
+    - phenology_mode
+    - mask_version
+    - qc_version
+  event_exposure:
+    columns:
+    - episode_id
+    - exposure_version
+    - grid_id
+    - year
+    - window_start_year
+    - window_end_year
+    - window_years
+    - LAI_base
+    - LAI_trend
+    - LAI_n_valid_years
+    - LAI_full_window
+    - LAI_exposure_cluster
+    - LAI_missing_reason
+    - NDVI_base
+    - NDVI_trend
+    - NDVI_n_valid_years
+    - NDVI_missing_reason
+    - deep_SM_pre4
+    - deep_SM_pre4_percentile
+    - deep_SM_pre4_z
+    - deep_window_start_tabs
+    - deep_window_end_tabs
+    - deep_missing_reason
+    - shallow_SM_pre4
+    - shallow_SM_pre4_percentile
+    - annual_p_mean_mm
+    - apr_sep_t2m_mean_c
+    - sand_0_30
+    - clay_0_30
+    - elevation_m
+    - slope_deg
+    - land_cover
+    - pentad_sin
+    - pentad_cos
+    - year_centered_2000
+    - active_window_length_L
+    - exposure_complete_L
+    - exposure_complete_D
+    - exposure_complete_I
+    - core_covariate_missing_reason
+    primary_key:
+    - episode_id
+    - exposure_version
+  exposure_cluster_audit:
+    columns:
+    - analysis_id
+    - LAI_exposure_cluster
+    - grid_id
+    - year
+    - n_event
+    - cluster_event_fraction
+    - selected_event_seed_id
+    - selected_episode_id
+    - inverse_cluster_weight
+    - block_id
+    - superblock_id
+    primary_key:
+    - analysis_id
+    - LAI_exposure_cluster
+  grid_year:
+    columns:
+    - product
+    - definition_id
+    - grid_id
+    - year
+    - support_id
+    - phenology_mode
+    - L
+    - N_onset
+    - N_A
+    - N_FR
+    - N_FZ
+    - N_censored
+    - affected_area
+    - phenology_fallback_rate
+    - LAI_availability
+    - block_id
+    - annual_p_mean_mm
+    - apr_sep_t2m_mean_c
+    - data_completeness
+    primary_key:
+    - product
+    - definition_id
+    - grid_id
+    - year
+    - support_id
+    - phenology_mode
+  event_regional:
+    columns:
+    - cluster_id
+    - product
+    - definition_id
+    - start_t_abs
+    - end_t_abs
+    - n_grid_episodes
+    - footprint_area_km2
+    - footprint_geometry_id
+    - initial_footprint_cells
+    - regional_qc_status
+  event_regional_member:
+    columns:
+    - cluster_id
+    - episode_id
+    - t_abs
+    - grid_id
+    - cell_area_km2
+    - connected_flag
+    - footprint_flag
+  route2_person_pentad:
+    columns:
+    - episode_id
+    - t0_ts
+    - followup_pentad
+    - t_abs
+    - at_risk
+    - exit_A
+    - exit_B
+    - exit_C_at_H
+    - censored
+    - censor_reason
+    - exit_type_unknown
+    - extreme_without_recovery
+    - smp_tv
+    - p95_flag_tv
+    - recovery_this_pentad
+    - fr_type_known
+    - F_R_subtype
+    - first_exit_t_abs
+    primary_key:
+    - episode_id
+    - followup_pentad
+  route2_exit:
+    columns:
+    - episode_id
+    - route2_version
+    - H
+    - exit_type
+    - exit_time
+    - censored
+    - censor_time
+    - censor_reason
+    - exit_type_unknown
+    - exit_A_strict
+    - strict_reclass_from_B
+    - extreme_without_recovery_ever
+    - followup_complete
+    - exposure_version
+    primary_key:
+    - episode_id
+    - route2_version
+  sample_flow:
+    columns:
+    - analysis_id
+    - step_order
+    - module
+    - step_name
+    - n_before
+    - n_after
+    - n_excluded
+    - exclusion_reason
+    - unit
+    - product
+    - definition_id
+    - support_id
+    - exposure_version
+  module_status:
+    columns:
+    - module_id
+    - status
+    status_values:
+    - not_run
+    - passed
+    - descriptive_only
+    - conditional_skipped
+    - exited
+    - failed
+  analysis_log:
+    columns:
+    - run_id
+    - module
+    - attempt_id
+    - start_time
+    - end_time
+    - status
+    - params_hash
+    - code_hash
+    - input_file_hashes
+    - output_file_hashes
+    - random_seed_id
+    - n_input_rows
+    - n_output_rows
+    - sample_flow_path
+    - unit_test_status
+    - warning_count
+    - error_message
+  model_fit_manifest:
+    columns:
+    - analysis_id
+    - run_id
+    - estimand
+    - question
+    - model_family
+    - model_code
+    - outcome
+    - exposure_version
+    - definition_id
+    - product
+    - support_id
+    - sample_start_year
+    - sample_end_year
+    - formula
+    - link_function
+    - n_event
+    - n_exposure
+    - n_outcome
+    - n_nonoutcome
+    - n_block
+    - n_superblock
+    - n_eff
+    - epv
+    - conservative_epv
+    - convergence_status
+    - separation_flag
+    - support_gate
+    - inference_level
+    - model_object_path
+    - random_seed_id
+    - code_hash
+  model_result:
+    columns:
+    - analysis_id
+    - term
+    - scale
+    - estimate
+    - std_error
+    - ci_low
+    - ci_high
+    - ci_method
+    - p_raw
+    - test_family
+    - p_holm
+    - effect_unit
+    - reference_level
+    - standardization
+    - estimand_note
+    primary_key:
+    - analysis_id
+    - term
+  model_marginal:
+    columns:
+    - analysis_id
+    - term
+    - deep_reference
+    - deep_reference_value
+    - LAI_reference
+    - LAI_reference_value
+    - predicted_probability
+    - probability_difference
+    - risk_difference
+    - marginal_effect
+    - ci_low
+    - ci_high
+    - ci_method
+    - scale
+  deviation_log:
+    columns:
+    - deviation_id
+    - date
+    - original_clause
+    - new_clause
+    - reason
+    - outcome_seen
+    - affected_modules
+    - approver
+    - rerun_scope
+    - preregistered_or_posthoc
+    - linked_run_id
+    - status

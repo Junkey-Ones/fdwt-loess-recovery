@@ -1,0 +1,37 @@
+# 编排层：以 dag.yaml 为依赖来源。模块执行统一交给运行入口。
+from pathlib import Path
+
+from workflow.run_module import DEFAULT_CONFIG, load_config, plan_modules, run_module, validate_alias
+
+dag = load_config(Path(workflow.basedir) / "dag.yaml")
+target = config.get("target", "route1")
+if target not in dag["targets"] and target not in dag["modules"]:
+    raise ValueError("未知运行目标。")
+requested = dag["targets"].get(target, [target])
+selected = plan_modules(dag, requested)
+alias = validate_alias(config.get("run_alias"))
+logs = Path(load_config(DEFAULT_CONFIG)["output"]["logs"]) / alias
+
+def receipt(module):
+    return str(logs / f"module_io_{module}.json")
+
+rule all:
+    input:
+        [receipt(module) for module in requested]
+
+def prerequisites(wildcards):
+    info = dag["modules"][wildcards.module]
+    dependencies = info["requires"] + [item for item in info.get("optional", []) if item in selected]
+    return [receipt(module) for module in dependencies]
+
+rule module:
+    input:
+        prerequisites
+    output:
+        str(logs / "module_io_{module}.json")
+    wildcard_constraints:
+        module="|".join(selected)
+    run:
+        run_module(wildcards.module, run_alias=alias,
+                   product_combo=config.get("product_combo"),
+                   variant=config.get("variant", "main"))

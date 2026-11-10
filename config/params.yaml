@@ -1,0 +1,253 @@
+grid:
+  resolution_deg: 0.1
+  main_version: era5land_010
+time:
+  year_start: 2000
+  year_end: 2023
+  pentads_per_year: 73
+  state_min_valid_days: 4
+  state_max_consecutive_missing_days: 2
+  flux_requires_complete_days: true
+spatial:
+  valid_area_min: 0.7
+  gldas_regrid: conservative_area
+  gldas_native_rerun: true
+mask:
+  igbp_keep:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 12
+  - 14
+  valid_year_start: 2001
+  valid_year_end: 2023
+  valid_years_min: 10
+  native_exclude_frac: 0.8
+  veg_area_min: 0.5
+  baseline_years:
+  - 2001
+  - 2005
+phenology:
+  qa:
+  - Best
+  - Good
+  pixel_area_min: 0.5
+  native_pixels_min: 30
+  valid_years_min: 5
+  multicycle: union
+  single_cycle_tie_days: 5
+  fallback: grid_median_sos_eos
+  fixed_window: 4—9月
+clim:
+  base_window:
+  - 2000
+  - 2023
+  pentad_pool:
+  - -1
+  - 0
+  - 1
+  min_n: 40
+  gringorten_a: 0.44
+  gringorten_b: 0.12
+  smp_multiplier: 100
+  normal_p_eps: 1.0e-06
+  balance_formula: P-ET_loss-R
+  p95_include_zero: true
+  p95_min_nonzero_n: 20
+  p95_zero_unusable: true
+  pentad73_checks:
+  - daily_rate
+  - five_day_equivalent
+  - drop_pentad73
+drought:
+  smp_above: 40
+  smp_below: 20
+  drop_rate_pct_per_pentad: 5
+  min_duration_pentads: 4
+  development_duration_sensitivity: 截至 t_min 连续至少4候 SMP<40%
+  tie_t_min: first
+  gap_breaks_segment: true
+recovery:
+  terminate_smp: 20
+  terminate_smp_sensitivity: 40
+  rt_formula: t_e-t_min
+  delta_formula: SMP(t_e)-SMP(t_min)
+  rr_formula: delta_SMP/RT
+  early_pentads: 2
+  post_te_trajectory:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+pterm:
+  window:
+  - t_min
+  - t_e+2
+  percentile: 95
+  min_p_mm: 1
+fr:
+  window:
+  - t_e-1
+  - t_e+1
+  percentile: 95
+  min_p_mm: 1
+  subtypes:
+  - pre
+  - sync
+  - post
+  h1_uses:
+  - pre
+  - sync
+fz:
+  window:
+  - t_e-1
+  - t_e+1
+  w1_rule: <0
+  w2_threshold: 0.5
+lag:
+  lag_p: t_P95-t_min
+  lag_fr: t_w_R-t_min
+  offset_fr: t_w_R-t_e
+dfai:
+  alpha: 3.2
+  strict_domain: W1<0 and W2>0
+wet_process:
+  allow_one_gap: false
+lai:
+  scale_factor: 0.1
+  window_years: 5
+  window_offset: y-5...y-1
+  main_requires_full: 5
+  annual_time_cover_min: 0.7
+  annual_space_cover_min: 0.7
+  base_method: mean_of_growing_season_annual_values
+  trend_method: theil_sen
+  standardization: sample_1sd
+  no_future_fill: true
+  complete_years:
+  - 2003
+  - 2023
+  exposure_years:
+  - 2008
+  - 2023
+ndvi:
+  scale_factor: 0.0001
+  reliability_keep:
+  - 0
+  - 1
+  common_sample_years:
+  - 2008
+  - 2023
+deep:
+  pre_pentads: 4
+  era5_depth_cm:
+  - 100
+  - 289
+  gldas_depth_cm:
+  - 100
+  - 200
+  summary: mean
+route1:
+  recovery_risk_t0: t_min
+  recovery_risk_h: 12
+  recovery_time_df: 3
+  cross_season: true
+  censor_types:
+  - administrative
+  - missing
+  ipcw: sensitivity
+route2:
+  t0: t_s
+  h: 12
+  exits:
+  - A
+  - B
+  - C
+  time_df: 3
+  strict_post_reclass: B_to_A_strict
+  multi_n: 200
+  interval_n_eff: 100
+  exit_b_min: 30
+  exit_blocks_min: 10
+  multi_min_per_exit: 30
+  multi_min_blocks: 20
+  max_b_share_per_block: 0.2
+infer:
+  epv_min: 10
+  min_n: 30
+  min_event_per_arm: 10
+  min_blocks: 10
+  min_n_eff: 20
+  quantile_025_075_n: 80
+  design_effect_formula: n/[1+(m-1)rho]
+trend:
+  min_valid_years: 18
+  year_min_events: 10
+  autocorr_trigger: ljung_box_lag1_p<0.05
+block:
+  km: 100
+  bootstrap_n: 500
+  two_way_cluster:
+  - space
+  - year
+diagnostic:
+  balance_residual_median_max: 0.2
+equivalence:
+  or:
+  - 0.8333333333333334
+  - 1.2
+  cont_sd: 0.1
+psm:
+  high_quantile: 0.75
+  low_quantile: 0.25
+  estimand: ATT_high
+  caliper: 0.05
+  max_abs_smd: 0.1
+gam:
+  max_edf: 3
+spec_curve:
+  r_robust: 0.8
+null_model:
+  circular_shifts: 1000
+multiple_testing:
+  family_alpha: 0.05
+  map_bh_q: 0.05
+protocol:
+  version: v1.3.1
+random:
+  seed_id: null
+  seed: null
+products:
+  main: era5land__era5land
+  combinations:
+  - era5land__era5land
+  - gldas21__gldas21
+  - era5land__chirps20
+  - gldas21__chirps20
+  native_grid: gldas_native_025
+output:
+  interim: data/interim
+  frozen: data/frozen
+  outputs: outputs
+  logs: logs
+covariates:
+  core:
+  - annual_p_mean_mm
+  - apr_sep_t2m_mean_c
+  - sand_0_30
+  - clay_0_30
+  - elevation_m
+  - slope_deg
+  - land_cover
+  - pentad_sin
+  - pentad_cos
+  - year_centered_2000
+  - active_window_length_L

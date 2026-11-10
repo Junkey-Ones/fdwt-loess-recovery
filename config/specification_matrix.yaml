@@ -1,0 +1,31 @@
+protocol_version: v1.3.1
+freeze_status: pending_exact_enumeration
+combination_policy: one_family_at_a_time
+reference: main
+estimands:
+  recovery_distribution:
+    families: [termination, duration, phenology, product]
+  recovery_risk:
+    families: [termination, duration, phenology, followup, product]
+  fr_conditional_proportion:
+    families: [termination, duration, phenology, fr_window, product]
+  recovery_magnitude_rate_contrast:
+    families: [termination, duration, phenology, fr_window, product]
+  lai_recovery_risk:
+    families: [termination, duration, phenology, followup, exposure, product]
+  lai_fr:
+    families: [termination, duration, phenology, fr_window, exposure, product]
+  lai_deep_recovery_risk:
+    families: [termination, duration, phenology, followup, exposure, deep_water, product]
+  lai_deep_fr:
+    families: [termination, duration, phenology, fr_window, exposure, deep_water, product]
+families:
+  termination: [main, alternate_termination]
+  duration: [main, development_duration]
+  phenology: [main, fixed_season, climatology, best_only, complete_case]
+  followup: [main, short_followup, long_followup]
+  fr_window: [main, wide_fr_window]
+  exposure: [main, short_lai_window, long_lai_window, ndvi_common_sample]
+  deep_water: [main, short_deep_window, long_deep_window]
+  product: [main, land_surface_replacement, precip_replacement, combined_replacement, gldas_native]
+selectable_variants: [main]

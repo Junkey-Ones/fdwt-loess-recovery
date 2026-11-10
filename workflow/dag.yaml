@@ -1,0 +1,15 @@
+modules:
+  M0: {name: 协议冻结, requires: []}
+  M1: {name: 原始数据审计, requires: [M0]}
+  M2: {name: 时空与土层预处理, requires: [M1]}
+  M3: {name: 掩膜物候与气候态, requires: [M2]}
+  M4: {name: 全量骤旱事件库, requires: [M3]}
+  M5: {name: 恢复与极端降水接续, requires: [M4]}
+  M6: {name: 事件前暴露, requires: [M4, M5]}
+  M7: {name: 路线一统计, requires: [M4, M5, M6]}
+  M8: {name: 路线二三出口, requires: [M4, M5], optional: [M6]}
+  M9: {name: 跨产品稳健性, requires: [M7], optional: [M8]}
+  M10: {name: 独立复核与论文输出, requires: [M9]}
+targets:
+  route1: [M10]
+  full: [M8, M10]
