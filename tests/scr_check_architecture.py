@@ -39,7 +39,7 @@ def test_preview_and_production_are_distinct():
     """计划可验证，科学模块缺失时生产请求必须失败。"""
     alias = "2026-11-10_架构验收"
     assert run_module("route1", run_alias=alias, dry_run=True)["modules"][-1] == "M10"
-    with pytest.raises(ValueError, match="科学模块尚未接入"):
+    with pytest.raises(ValueError, match="正式冻结 M0"):
         run_module("route1", run_alias=alias)
     with pytest.raises(ValueError, match="禁止覆盖"):
         run_module("route1", run_alias=alias, overwrite_frozen=True, dry_run=True)
@@ -48,6 +48,7 @@ def test_preview_and_production_are_distinct():
 def test_seed_must_be_registered():
     """种子未登记时禁止生成正式运行身份。"""
     params = load_config(ROOT / "config" / "params.yaml")
+    params["random"] = {"seed": None, "seed_id": None}
     with pytest.raises(ValueError, match="随机种子"):
         build_run_id(params, "a" * 64, "b" * 64)
     params["random"] = {"seed": 1, "seed_id": "seed_test"}

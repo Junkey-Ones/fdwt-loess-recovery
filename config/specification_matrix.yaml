@@ -1,31 +1,399 @@
 protocol_version: v1.3.1
-freeze_status: pending_exact_enumeration
+freeze_status: frozen
 combination_policy: one_family_at_a_time
 reference: main
 estimands:
   recovery_distribution:
-    families: [termination, duration, phenology, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - product
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - land_surface_replacement
+    - gldas_native
+    n_specifications: 9
+    excluded_variants:
+    - precip_replacement
+    - combined_replacement
   recovery_risk:
-    families: [termination, duration, phenology, followup, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - followup
+    - product
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - short_followup
+    - long_followup
+    - land_surface_replacement
+    - gldas_native
+    n_specifications: 11
+    excluded_variants:
+    - precip_replacement
+    - combined_replacement
   fr_conditional_proportion:
-    families: [termination, duration, phenology, fr_window, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - fr_window
+    - product
+    - precip_threshold
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - wide_fr_window
+    - land_surface_replacement
+    - precip_replacement
+    - combined_replacement
+    - gldas_native
+    - p99
+    - wet_p95
+    n_specifications: 14
   recovery_magnitude_rate_contrast:
-    families: [termination, duration, phenology, fr_window, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - fr_window
+    - product
+    - precip_threshold
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - wide_fr_window
+    - land_surface_replacement
+    - precip_replacement
+    - combined_replacement
+    - gldas_native
+    - p99
+    - wet_p95
+    n_specifications: 14
   lai_recovery_risk:
-    families: [termination, duration, phenology, followup, exposure, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - followup
+    - exposure
+    - product
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - short_followup
+    - long_followup
+    - short_lai_window
+    - long_lai_window
+    - lai_four_of_five
+    - ndvi_common_sample
+    - land_surface_replacement
+    - gldas_native
+    n_specifications: 15
+    excluded_variants:
+    - precip_replacement
+    - combined_replacement
   lai_fr:
-    families: [termination, duration, phenology, fr_window, exposure, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - fr_window
+    - exposure
+    - product
+    - precip_threshold
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - wide_fr_window
+    - short_lai_window
+    - long_lai_window
+    - lai_four_of_five
+    - ndvi_common_sample
+    - land_surface_replacement
+    - precip_replacement
+    - combined_replacement
+    - gldas_native
+    - p99
+    - wet_p95
+    n_specifications: 18
   lai_deep_recovery_risk:
-    families: [termination, duration, phenology, followup, exposure, deep_water, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - followup
+    - exposure
+    - deep_water
+    - product
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - short_followup
+    - long_followup
+    - short_lai_window
+    - long_lai_window
+    - lai_four_of_five
+    - ndvi_common_sample
+    - short_deep_window
+    - long_deep_window
+    - land_surface_replacement
+    - gldas_native
+    n_specifications: 17
+    excluded_variants:
+    - precip_replacement
+    - combined_replacement
   lai_deep_fr:
-    families: [termination, duration, phenology, fr_window, exposure, deep_water, product]
+    families:
+    - termination
+    - duration
+    - phenology
+    - fr_window
+    - exposure
+    - deep_water
+    - product
+    - precip_threshold
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - wide_fr_window
+    - short_lai_window
+    - long_lai_window
+    - lai_four_of_five
+    - ndvi_common_sample
+    - short_deep_window
+    - long_deep_window
+    - land_surface_replacement
+    - precip_replacement
+    - combined_replacement
+    - gldas_native
+    - p99
+    - wet_p95
+    n_specifications: 20
+  pterm_conditional_proportion:
+    families:
+    - termination
+    - duration
+    - phenology
+    - product
+    - precip_threshold
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - land_surface_replacement
+    - precip_replacement
+    - combined_replacement
+    - gldas_native
+    - p99
+    - wet_p95
+    n_specifications: 13
+  fz_conditional_proportion:
+    families:
+    - termination
+    - duration
+    - phenology
+    - product
+    - fz_threshold
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - land_surface_replacement
+    - gldas_native
+    - fz_084
+    - fz_128
+    n_specifications: 11
+    excluded_variants:
+    - precip_replacement
+    - combined_replacement
+  dfai_strict_intensity:
+    families:
+    - termination
+    - duration
+    - phenology
+    - product
+    - dfai_alpha
+    specifications:
+    - main
+    - alternate_termination
+    - development_duration
+    - fixed_season
+    - climatology
+    - best_only
+    - complete_case
+    - land_surface_replacement
+    - gldas_native
+    - alpha_20
+    - alpha_41
+    n_specifications: 11
+    excluded_variants:
+    - precip_replacement
+    - combined_replacement
 families:
-  termination: [main, alternate_termination]
-  duration: [main, development_duration]
-  phenology: [main, fixed_season, climatology, best_only, complete_case]
-  followup: [main, short_followup, long_followup]
-  fr_window: [main, wide_fr_window]
-  exposure: [main, short_lai_window, long_lai_window, ndvi_common_sample]
-  deep_water: [main, short_deep_window, long_deep_window]
-  product: [main, land_surface_replacement, precip_replacement, combined_replacement, gldas_native]
-selectable_variants: [main]
+  termination:
+  - main
+  - alternate_termination
+  duration:
+  - main
+  - development_duration
+  phenology:
+  - main
+  - fixed_season
+  - climatology
+  - best_only
+  - complete_case
+  followup:
+  - main
+  - short_followup
+  - long_followup
+  fr_window:
+  - main
+  - wide_fr_window
+  exposure:
+  - main
+  - short_lai_window
+  - long_lai_window
+  - lai_four_of_five
+  - ndvi_common_sample
+  deep_water:
+  - main
+  - short_deep_window
+  - long_deep_window
+  product:
+  - main
+  - land_surface_replacement
+  - precip_replacement
+  - combined_replacement
+  - gldas_native
+  precip_threshold:
+  - main
+  - p99
+  - wet_p95
+  fz_threshold:
+  - main
+  - fz_084
+  - fz_128
+  dfai_alpha:
+  - main
+  - alpha_20
+  - alpha_41
+selectable_variants:
+- main
+- fixed_season
+applicability:
+  unlisted_family: 该估计对象未登记该定义族，记 not_applicable。
+  unsupported_input: 未获数据放行或缺少适用年份、变量或网格时，记 not_applicable 并列明原因。
+  exposure_window: 仅用事件前完整年，按该版本的覆盖和有效年门槛核定；NDVI 比较限制在共同样本。
+  product: P 阈值各产品独立估计。CHIRPS 只替换降水，不能提供 W、SMP 或深层水。
+  threshold: 湿候阈值仅在合格湿候数达到配置门槛时适用。
+  weighting: 主规格只计一次。定义族等权汇总使用各族适用敏感性规格，报告各族分母。
+  redundant_precip_replacement: 仅用恢复或 W 序列的估计对象排除 CHIRPS 降水替换；联合替换在这些估计对象中与 GLDAS 陆面复算重复。
+variant_settings:
+  alternate_termination:
+    termination_threshold_ref: recovery.terminate_smp_sensitivity
+  development_duration:
+    duration_definition: development_duration
+  fixed_season:
+    phenology_mode: fixed_apr_sep
+  climatology:
+    phenology_mode: climatology
+  best_only:
+    phenology_qa:
+    - Best
+  complete_case:
+    phenology_mode: complete_case
+  short_followup:
+    h_ref: sensitivity.followup.short
+  long_followup:
+    h_ref: sensitivity.followup.long
+  wide_fr_window:
+    window_ref: sensitivity.fr_window
+  short_lai_window:
+    window_ref: sensitivity.lai.short
+  long_lai_window:
+    window_ref: sensitivity.lai.long
+  lai_four_of_five:
+    valid_years_ref: sensitivity.lai.relaxed_valid_years
+  ndvi_common_sample:
+    exposure: ndvi
+    sample: common_support
+  short_deep_window:
+    window_ref: sensitivity.deep.short
+  long_deep_window:
+    window_ref: sensitivity.deep.long
+  land_surface_replacement:
+    product_combo: gldas21__gldas21
+  precip_replacement:
+    product_combo: era5land__chirps20
+  combined_replacement:
+    product_combo: gldas21__chirps20
+  gldas_native:
+    product_combo: gldas21__gldas21
+    grid_version: gldas_native_025
+  p99:
+    percentile_ref: sensitivity.precip.p99
+    support: all_pentads
+  wet_p95:
+    percentile_ref: pterm.percentile
+    support: wet_pentads
+  fz_084:
+    threshold_ref: sensitivity.fz.low
+  fz_128:
+    threshold_ref: sensitivity.fz.high
+  alpha_20:
+    alpha_ref: sensitivity.dfai.low
+  alpha_41:
+    alpha_ref: sensitivity.dfai.high

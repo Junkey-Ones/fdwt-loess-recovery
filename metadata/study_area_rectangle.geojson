@@ -1,0 +1,9 @@
+{
+  "type": "Feature",
+  "id": "loess_rectangle_v2",
+  "properties": {},
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[[102, 34], [115, 34], [115, 41], [102, 41], [102, 34]]]
+  }
+}

@@ -2,8 +2,11 @@ protocol_version: v1.3.1
 protocol_source: 技术路线与实施方案V1.0
 internal_protocol_freeze_date: '2026-11-02'
 external_registration_id: null
-research_boundary_status: pending
-random_seed_status: pending
+research_boundary_status: frozen
+research_boundary_id: loess_rectangle_v2
+research_boundary_deviation_id: dev_m0_rectangle_v2
+random_seed_status: frozen
+random_seed_id: seed_m0_v1
 precedence:
   scientific_estimands: 预注册文档
   data_fields_and_qc: 详细技术手册与SOP附录

@@ -1,1 +1,5 @@
 deviation_id,date,original_clause,new_clause,reason,outcome_seen,affected_modules,approver,rerun_scope,preregistered_or_posthoc,linked_run_id,status
+dev_m0_rectangle,2026-11-10,SOP §14.6 外包矩形仅用于下载且正式掩膜须使用研究区真实边界,采用 103–114°E 和 34–41°N 的完整矩形作为正式研究区并按真实格点交叠面积聚合,项目负责人确认矩形为研究总体且确定边界前未查看暴露与结局的关联结果,no,M0–M10,项目负责人（本次聊天确认）,按新研究区从 M1 验收并重跑 M2–M10 空间相关流程,pre_outcome_deviation,,approved
+dev_period_2003,2026-11-10,v1.3.1 事件库和气候态 2000–2023,事件库和气候态基准期采用 2003–2023,项目负责人在本次聊天确认,unknown,M0–M10,项目负责人（本次聊天确认）,重新冻结并从 M1 运行,classification_pending,,approved
+dev_m0_rectangle_v2,2026-11-10,dev_m0_rectangle 采用 103–114°E 和 34–41°N,采用 102–115°E 和 34–41°N 完整矩形,项目负责人在本次聊天更新经度范围,unknown,M0–M10,项目负责人（本次聊天确认）,重新冻结并按新边界重新执行空间相关模块,classification_pending,,approved
+dev_q3_covariate_period_2003,2026-11-10,Q3 背景气候协变量采用 2000–2023,年均降水和4–9月均温改用 2003–2023,项目负责人确认与主数据时期一致,no,M2与M6–M10,项目负责人（本次聊天确认）,重新冻结并重算协变量和受影响模型,pre_outcome_deviation,,approved

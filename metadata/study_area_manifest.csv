@@ -1,0 +1,2 @@
+boundary_id,definition_version,publisher,official_url,license,download_time_utc,file_name,file_sha256,source_crs,geometry_type,feature_count,validity_status,bbox,area_km2_equal_area,dissolve_rule,repair_rule,inclusion_rule,acceptance_status,notes
+loess_rectangle_v2,v2,本项目,,项目自定义范围,,metadata/study_area_rectangle.geojson,6bce97ff30490ab03116f767431d1fe5df8dd5e75bc03f938d9448f91d7f2a66,OGC:CRS84,Polygon,1,valid,"[102,34,115,41]",892090.796452291,不适用,不修复,完整矩形并保留实际格点交叠面积,accepted,偏离 dev_m0_rectangle_v2；球面面积采用 6371.0088 km 半径

@@ -1,5 +1,8 @@
 schema_version: v1.3.1
 tables:
+  study_area_manifest:
+    columns: [boundary_id, definition_version, publisher, official_url, license, download_time_utc, file_name, file_sha256, source_crs, geometry_type, feature_count, validity_status, bbox, area_km2_equal_area, dissolve_rule, repair_rule, inclusion_rule, acceptance_status, notes]
+    primary_key: [boundary_id]
   source_file_manifest:
     columns:
     - file_id
@@ -53,6 +56,21 @@ tables:
     - note
     primary_key:
     - mapping_id
+  sop_native_acceptance:
+    columns: [source_id, file_sha256, product_code, collection, variable_check, dimension_check, coordinate_check, time_check, unit_check, fill_check, qc_decode_check, physical_range_check, acceptance_status, failed_items, reviewer, accepted_at_utc]
+    primary_key: [source_id]
+  sop_product_coverage:
+    columns: [product_code, year, n_source_files_expected, n_source_files_received, n_days_expected, n_days_valid, n_pentads_expected, n_pentads_valid, spatial_area_expected_km2, spatial_area_valid_km2, missing_periods, duplicate_periods, coverage_status]
+    primary_key: [product_code, year]
+  m1_missing_files:
+    columns: [product_code, period, file_path, reason]
+    primary_key: [product_code, period, file_path]
+  m1_data_coverage:
+    columns: [product_code, n_expected, n_received, n_accepted, coverage_status]
+    primary_key: [product_code]
+  m1_sample_flow:
+    columns: [stage, n_before, n_after, reason]
+    primary_key: [stage]
   time_pentad_calendar:
     columns:
     - t_abs
@@ -241,6 +259,7 @@ tables:
     - clim_version
   grid_pentad:
     columns:
+    - land_cover
     - product_combo
     - soil_product
     - precip_product
@@ -288,13 +307,63 @@ tables:
     - clim_version
   event_master:
     columns:
-    - LAI_base
-    - LAI_trend
-    - LAI_exposure_cluster
-    - NDVI_base
-    - NDVI_trend
-    - deep_SM_pre4
-    - shallow_SM_pre4
+    - episode_id
+    - grid_id
+    - cluster_id
+    - product
+    - soil_product
+    - precip_product
+    - grid_version
+    - support_id
+    - duration_definition
+    - termination_rule
+    - phenology_mode
+    - year
+    - t_s
+    - t_min
+    - t_e
+    - t_s_year
+    - t_s_pentad
+    - t_min_year
+    - t_min_pentad
+    - t_e_year
+    - t_e_pentad
+    - right_censored
+    - censor_type
+    - censor_t_abs
+    - duration
+    - observed_duration
+    - development_rate
+    - smp_min
+    - mean_deficit
+    - max_deficit
+    - RT
+    - delta_SMP
+    - RR
+    - recovery_slope
+    - early_recovery_rate
+    - route1_A_eligible
+    - recovery_risk_eligible
+    - P_term
+    - P_term_status
+    - pterm_total_mm
+    - pterm_max_mm
+    - t_P95
+    - Lag_P
+    - F_R
+    - F_R_status
+    - F_R_subtype
+    - t_w_R
+    - Lag_FR
+    - Offset_FR
+    - F_Z
+    - F_Z_status
+    - wet_process_id
+    - phenology_fallback
+    - active_window
+    - land_cover
+    - data_completeness
+    - missingness_flags
     primary_key:
     - episode_id
   event_candidate_audit:
@@ -320,6 +389,7 @@ tables:
     columns:
     - episode_id
     - t_abs
+    - p_term_definition
     - year
     - pentad
     - p_mm
@@ -698,3 +768,33 @@ tables:
     - preregistered_or_posthoc
     - linked_run_id
     - status
+
+  q1_annual:
+    columns: [year, n_event, RT, delta_SMP, RR]
+    primary_key: [year]
+  q2_annual:
+    columns: [year, n_recovered, n_known, n_positive, n_unknown, proportion]
+    primary_key: [year]
+  cross_product_event_match:
+    columns: [product_combo, grid_id, main_episode_id, alt_episode_id, delta_ts, delta_tmin]
+    primary_key: [product_combo, main_episode_id]
+  spec_manifest:
+    columns: [estimand, specification, status]
+    primary_key: [estimand, specification]
+  review_event_recalc:
+    columns: [episode_id, passed, issues]
+    primary_key: [episode_id]
+
+  wet_process_membership:
+    columns: [wet_process_id, product_combo, grid_id, support_id, t_abs]
+    primary_key: [product_combo, grid_id, support_id, t_abs]
+  superblock_membership:
+    columns: [block_id, superblock_id]
+    primary_key: [block_id]
+
+  trend_estimate:
+    columns: [metric, n_years, sen_slope, status]
+    primary_key: [metric]
+  cross_product_match_summary:
+    columns: [product_combo, n_main, n_alt, n_match, main_hit, alt_hit, jaccard]
+    primary_key: [product_combo]

@@ -2,7 +2,8 @@ grid:
   resolution_deg: 0.1
   main_version: era5land_010
 time:
-  year_start: 2000
+  index_base_year: 2000
+  year_start: 2003
   year_end: 2023
   pentads_per_year: 73
   state_min_valid_days: 4
@@ -45,9 +46,10 @@ phenology:
   single_cycle_tie_days: 5
   fallback: grid_median_sos_eos
   fixed_window: 4—9月
+  fixed_months: [4, 9]
 clim:
   base_window:
-  - 2000
+  - 2003
   - 2023
   pentad_pool:
   - -1
@@ -71,6 +73,7 @@ drought:
   smp_below: 20
   drop_rate_pct_per_pentad: 5
   min_duration_pentads: 4
+  regional_initial_min_cells: 3
   development_duration_sensitivity: 截至 t_min 连续至少4候 SMP<40%
   tie_t_min: first
   gap_breaks_segment: true
@@ -215,16 +218,29 @@ gam:
   max_edf: 3
 spec_curve:
   r_robust: 0.8
+sensitivity:
+  followup: {short: 6, long: 18}
+  fr_window: [t_e-2, t_e+2]
+  lai: {short: 3, long: 10, relaxed_valid_years: 4}
+  deep: {short: 1, long: 12}
+  precip: {p99: 99}
+  fz: {low: 0.84, high: 1.28}
+  dfai: {low: 2.0, high: 4.1}
 null_model:
   circular_shifts: 1000
 multiple_testing:
   family_alpha: 0.05
+  family_adjustment: holm
+  families:
+    q1: [annual_rt_trend, annual_delta_smp_trend, annual_rr_trend]
+    q2: [fr_pre_sync_rr_contrast, fr_pre_sync_delta_smp_contrast]
+    q3: [lai_trend_recovery_risk, lai_trend_fr, lai_trend_deep_recovery_risk, lai_trend_deep_fr]
   map_bh_q: 0.05
 protocol:
   version: v1.3.1
 random:
-  seed_id: null
-  seed: null
+  seed_id: seed_m0_v1
+  seed: 268614731
 products:
   main: era5land__era5land
   combinations:
@@ -239,6 +255,7 @@ output:
   outputs: outputs
   logs: logs
 covariates:
+  climate_years: [2003, 2023]
   core:
   - annual_p_mean_mm
   - apr_sep_t2m_mean_c
@@ -251,3 +268,21 @@ covariates:
   - pentad_cos
   - year_centered_2000
   - active_window_length_L
+
+native_era5land:
+  raw_root: data/raw
+  evidence: metadata/local/era5land_sources.yaml
+  root_layer_thickness_m: [0.07, 0.21, 0.72]
+  deep_layer_thickness_m: 1.89
+  kelvin_offset: 273.15
+  mm_per_m: 1000
+  water_roundoff_m: 0.0000001
+  temperature_range_k: [180, 350]
+  earth_radius_km: 6371.0088
+
+downstream:
+  supplement_manifest: metadata/local/downstream_inputs.json
+robustness:
+  match_tolerance: 1
+review:
+  minimum_events: 30

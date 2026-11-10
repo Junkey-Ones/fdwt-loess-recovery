@@ -1,21 +1,24 @@
 """脚本名：run_module.py（编排层 · 统一运行入口）
 
-功能简介：收集运行控制信息并在科学任务启动前验证运行计划。
+功能简介：验证运行计划，调度 M0 冻结及 ERA5-Land M1/M2。
 作者：Codex
 版本：v0.1.0
 读取数据：config 下的参数与规范矩阵、workflow/dag.yaml、logs 下的运行登记。
-生成数据：无。架构阶段仅支持计划预检。
+生成数据：M0 冻结前审计 JSONL。
 其他文件：进度和错误发送到标准错误。
 运行示例：python -m workflow.run_module
 退出码：0 计划有效，1 执行失败，2 预检失败，130 中断。
 """
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sys
+from tempfile import NamedTemporaryFile
 from time import monotonic
+from uuid import uuid4
 
 import yaml
 
@@ -26,10 +29,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "params.yaml"
 
 
-def load_config(path):
+def load_config(path, *, content=None):
     """读取 UTF-8 YAML 映射。返回配置字典，不补写科学参数。"""
-    with Path(path).open(encoding="utf-8-sig") as source:
-        config = yaml.safe_load(source)
+    if content is None:
+        content = Path(path).read_bytes()
+    config = yaml.safe_load(content.decode("utf-8-sig"))
     if not isinstance(config, dict):
         raise ValueError(f"配置必须为 YAML 映射：{path}")
     return config
@@ -90,15 +94,80 @@ def build_run_id(params, params_hash, code_hash):
     return f'{params["protocol"]["version"]}__{params_hash[:12]}__{code_hash[:12]}__{seed["seed_id"]}'
 
 
+def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, formal_freeze):
+    """收集只读审计输入并将单次审计明细原子封存到日志目录。"""
+    from src.M0.scr_audit_protocol import audit_protocol
+
+    matrix_path = "config/specification_matrix.yaml"
+    schema_path = "config/schema_registry.yaml"
+    freeze_path = "metadata/protocol_freeze.yaml"
+    document_dir = Path("docs/论文方向与构想")
+    version = params["protocol"]["version"]
+    if not isinstance(version, str) or not re.fullmatch(r"v\d+\.\d+\.\d+", version):
+        raise ValueError("协议版本须采用 v主版本.次版本.修订版本 格式。")
+    titles = ("预注册文档", "详细技术手册", "分产品原生变量与预处理SOP附录",
+              "说明书", "权威文献引用解释", "模块化思路理解", "AI工作包_workflow搭建")
+    documents = [(document_dir / f"黄土高原FD-WT_{version}_{title}.md").as_posix()
+                 for title in titles]
+    paths = [schema_path, freeze_path, "config/deviation_log.csv", "workflow/dag.yaml",
+             "metadata/source_file_manifest.csv", "metadata/source_variable_map.csv",
+             "metadata/site_boundary_acceptance.csv", "metadata/study_area_manifest.csv", *documents]
+    inputs = {path: (ROOT / path).read_bytes() for path in paths}
+    boundary_path = "metadata/study_area_rectangle.geojson"
+    if (ROOT / boundary_path).is_file():
+        inputs[boundary_path] = (ROOT / boundary_path).read_bytes()
+    inputs[os.path.relpath(Path(config_path).resolve(), ROOT).replace(os.sep, "/")] = params_bytes
+    inputs[matrix_path] = matrix_bytes
+    schema = load_config(schema_path, content=inputs[schema_path])
+    freeze = load_config(freeze_path, content=inputs[freeze_path])
+    report = audit_protocol(params, schema, matrix, freeze, documents, inputs)
+
+    logs_root = (ROOT / params["output"]["logs"]).resolve()
+    log_dir = (logs_root / plan["run_alias"] / "M0").resolve()
+    if not log_dir.is_relative_to(ROOT / "logs"):
+        raise ValueError("M0 审计日志必须位于项目 logs 目录内。")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y-%m-%dT%H-%M-%S")
+    destination = log_dir / f"M0_scr_audit_protocol_{stamp}_{uuid4().hex}.jsonl"
+    event = {
+        "level": "ERROR" if report["status"] == "failed" else "INFO",
+        "time": now.isoformat(),
+        "message": "M0 冻结前审计完成，区域分析未放行",
+        "run_alias": plan["run_alias"],
+        "stdout": report,
+        "stderr": [row["detail"] for row in report["checks"] if row["status"] != "passed"],
+    }
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=log_dir, delete=False, suffix=".tmp") as handle:
+        temporary = Path(handle.name)
+    try:
+        temporary.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    audited = {**plan, "m0_audit": report, "audit_log": str(destination)}
+    if formal_freeze:
+        from .freeze_m0 import register_freeze
+
+        if report["status"] == "failed":
+            return audited
+        modules = load_config("workflow/dag.yaml", content=inputs["workflow/dag.yaml"])["modules"]
+        return register_freeze(ROOT, audited, params, report, inputs, build_run_id, modules)
+    return audited
+
+
 def run_module(module_id, config_path=DEFAULT_CONFIG, run_id=None, run_alias=None,
                resume=True, overwrite_frozen=False, *, product_combo=None,
-               variant="main", dry_run=False):
-    """预检统一入口。返回有序模块和运行控制信息，不写科学数据。"""
+               variant="main", dry_run=False, freeze=False, progress=None):
+    """统一运行入口。预检只读，正式执行须匹配所选模块的冻结契约。"""
     alias = validate_alias(run_alias)
     if overwrite_frozen:
         raise ValueError("冻结产物禁止覆盖。")
-    params = load_config(config_path)
-    matrix = load_config(ROOT / "config" / "specification_matrix.yaml")
+    params_bytes = Path(config_path).read_bytes()
+    matrix_path = ROOT / "config" / "specification_matrix.yaml"
+    matrix_bytes = matrix_path.read_bytes()
+    params = load_config(config_path, content=params_bytes)
+    matrix = load_config(matrix_path, content=matrix_bytes)
     dag = load_config(ROOT / "workflow" / "dag.yaml")
     targets = dag["targets"].get(module_id, [module_id]) if isinstance(module_id, str) else module_id
     modules = plan_modules(dag, targets)
@@ -109,9 +178,36 @@ def run_module(module_id, config_path=DEFAULT_CONFIG, run_id=None, run_alias=Non
         raise ValueError("规范变体尚未放行。")
     plan = {"modules": modules, "run_alias": alias, "run_id": run_id,
             "product_combo": product, "variant": variant, "resume": resume}
+    if freeze and (dry_run or modules != ["M0"]):
+        raise ValueError("正式冻结只能用于单独运行 M0，且不能与预检同时使用。")
     if dry_run:
         return plan
-    raise ValueError("科学模块尚未接入生产入口。请使用计划预检查看编排顺序。")
+    from contextlib import ExitStack
+    from .freeze_m0 import alias_lock
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(alias_lock(ROOT, alias))
+        except OSError as error:
+            raise ValueError(f"无法锁定运行别名，可能正在运行或清理：{alias}") from error
+        return execute_plan(plan, config_path, params, matrix, params_bytes, matrix_bytes, freeze, progress)
+
+
+def execute_plan(plan, config_path, params, matrix, params_bytes, matrix_bytes, freeze, progress):
+    """在别名锁保护下调度正式运行。"""
+    modules = plan["modules"]
+    if modules == ["M0"]:
+        if plan["run_id"] is not None and not freeze:
+            raise ValueError("冻结前审计只使用运行别名，不能绑定正式 run_id。")
+        return run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, freeze)
+    if modules in (["M0", "M1"], ["M0", "M1", "M2"]):
+        from .run_era5land import run_era5land
+
+        return run_era5land(ROOT, plan, config_path, params, load_config,
+                            progress or (lambda *_: None))
+    from .run_downstream import run_downstream
+
+    return run_downstream(ROOT, plan, config_path, params, load_config, progress or (lambda *_: None))
 
 
 def wizard(args, panel):
@@ -129,7 +225,7 @@ def wizard(args, panel):
         plan_modules(dag, modules)
         return modules
 
-    target = panel.menu("选择要预检的范围", (
+    target = panel.menu("选择运行范围", (
         ("route1", "路线一主分析", "M0–M7、M9–M10"),
         ("full", "完整工作流", "M0–M10，包含 M8 路线二"),
         ("custom", "指定模块", "选择一个或多个模块，自动纳入必需的上游依赖"),
@@ -147,14 +243,14 @@ def wizard(args, panel):
         if name in {"interim", "frozen"}:
             root = root / "{数据名}"
         paths.append(f"{path_labels.get(name, name)}  {root / args.run_alias}")
-    status = ROOT / params["output"]["logs"] / args.run_alias / "module_status.csv"
+    run_logs = ROOT / params["output"]["logs"] / args.run_alias
+    status = run_logs / "module_status.csv"
+    args.new = not status.is_file()
     if status.is_file() and re.search(r",(not_run|failed)\b", status.read_text(encoding="utf-8-sig")):
         panel.menu("发现同名未完成记录", (
-            ("resume", "预检续跑计划", "以该别名作为续跑目标"),
+            ("resume", "续接已有运行", "使用该别名和现有回执"),
             ("cancel", "退出", "如需全新运行，请重新启动并输入新别名"),
         ), "resume", section="02  运行版本", check=confirm)
-    else:
-        args.new = not status.is_file()
     products = params["products"]
     args.product_combo = products["main"]
     if len(products["combinations"]) > 1:
@@ -178,16 +274,25 @@ def wizard(args, panel):
     ), "auto", section="04  显示方式", check=check_progress)
     selected = dag["targets"].get(target, args.modules)
     ordered = plan_modules(dag, selected)
-    panel.menu("核对设置后开始计划预检", (
-        ("start", "开始预检", "检查选项与依赖，当前不会生成科学产物"),
-        ("cancel", "退出向导", "结束本次预检"),
+    m0_audit = ordered == ["M0"]
+    actions = (("start", "开始 M0 冻结前审计", "检查登记并写入独立审计日志"),
+               ("freeze", "正式冻结 M0", "审计通过后封存协议并登记运行编号")) if m0_audit else (
+        ("start", "开始预检", "检查选项与依赖"),)
+    if ordered in (["M0", "M1"], ["M0", "M1", "M2"]):
+        if (run_logs / "module_io_M0.json").is_file():
+            actions = (("execute", "执行已冻结的 ERA5-Land 模块", "使用同一 M0 冻结别名"), *actions)
+        else:
+            actions = (("start", "开始预检", "此别名尚未正式冻结 M0。请先单独选择 M0 并正式冻结，再用同一别名执行"),)
+    action = panel.menu("核对设置并确认", (*actions,
+        ("cancel", "退出向导", "结束本次操作"),
     ), section="05  确认计划", check=confirm, details=(
         f"模块顺序  {' → '.join(ordered)}",
-        f"运行版本  {args.run_alias}（{'全新' if args.new else '按现有别名预检'}）",
+        f"运行版本  {args.run_alias}（{'全新' if args.new else '续接现有别名'}）",
         f"数据组合  {args.product_combo}    规范  {args.variant}",
         *paths,
     ))
-    args.dry_run = True
+    args.dry_run = not m0_audit and action != "execute"
+    args.freeze = action == "freeze"
     return args
 
 
@@ -212,6 +317,7 @@ def main(argv=None):
     parser.add_argument("--variant", default="main", help="已放行规范变体")
     parser.add_argument("--new", action="store_true", help="选择全新运行")
     parser.add_argument("--dry-run", action="store_true", help="仅校验运行计划")
+    parser.add_argument("--freeze", action="store_true", help="单独运行 M0 并正式冻结协议")
     parser.add_argument("--progress", choices=["auto", "panel", "plain"], default="auto", help="进度显示模式")
     args = parser.parse_args(argv)
     interactive = not (sys.argv[1:] if argv is None else argv)
@@ -224,22 +330,49 @@ def main(argv=None):
             raise ValueError("高级入口须指定模块或运行目标。")
         validate_progress(parser, argparse.Namespace(progress=args.progress, dry_run=False))
         targets = args.modules[0] if len(args.modules) == 1 else args.modules
+        m0_audit = targets == "M0" and not args.dry_run
+        current = ["正在审计" if m0_audit else "正在预检", "核对依赖和运行选项", 0.0]
+
+        def report_progress(step, detail, fraction):
+            current[:] = [step, detail, fraction]
+            if status.panel.live is None and (fraction == 0 or detail.endswith("-01")):
+                sys.stderr.write(f"{step}  {detail}\n")
+
         def render():
-            status.panel.draw("黄土高原 FD-WT", args.run_alias, "正在预检",
-                              "核对依赖和运行选项", "目标 " + "、".join(args.modules),
-                              f"耗时 {monotonic() - started:.2f} 秒", 0.0)
+            status.panel.draw("黄土高原 FD-WT", args.run_alias,
+                              current[0], current[1],
+                              "目标 " + "、".join(args.modules),
+                              f"耗时 {monotonic() - started:.2f} 秒", current[2])
 
         status = LiveStatus(args.progress, render)
         try:
             status.start()
             plan = run_module(targets, args.config_path, args.run_id, args.run_alias,
                               not args.new, product_combo=args.product_combo,
-                              variant=args.variant, dry_run=args.dry_run)
+                              variant=args.variant, dry_run=args.dry_run, freeze=args.freeze,
+                              progress=report_progress)
         finally:
             status.close()
-        sys.stderr.write(f"计划预检完成，共 {len(plan['modules'])} 个模块。科学模块待接入。\n")
+        report = plan.get("m0_audit")
+        stages = plan.get("module_status")
+        if stages is not None:
+            for stage, outcome in stages.items():
+                sys.stderr.write(f"{stage} 状态 {outcome}\n")
+            sys.stderr.write(f"M1 报告位于 {plan['m1_reports']}\n")
+        elif report is None:
+            sys.stderr.write(f"计划预检完成，共 {len(plan['modules'])} 个模块。\n")
+        else:
+            sys.stderr.write(f"M0 冻结前审计完成，日志位于 {plan['audit_log']}\n")
+            if report["formal_freeze_written"]:
+                sys.stderr.write(f"M0 正式冻结完成，运行编号 {plan['run_id']}\n")
+            for check in report["checks"]:
+                if check["status"] != "passed":
+                    sys.stderr.write(f"  [{check['status']}] {check['detail']}\n")
         sys.stdout.write(json.dumps(plan, ensure_ascii=False) + "\n")
-        return 0
+        if stages is not None and any(outcome == "failed" or (outcome == "exited" and stage != "M8")
+                                      for stage, outcome in stages.items()):
+            return 1
+        return 2 if report and report["status"] == "failed" else 0
     except (KeyboardInterrupt, EOFError):
         sys.stderr.write("运行已中断。\n")
         return 130

@@ -7,3 +7,7 @@ dependencies:
   - rich=14.2.0
   - snakemake-minimal=9.13.7
   - pytest=8.4.2
+  - numpy=2.2.6
+  - netcdf4=1.7.2
+  - pyarrow=19.0.1
+  - matplotlib=3.10.7
