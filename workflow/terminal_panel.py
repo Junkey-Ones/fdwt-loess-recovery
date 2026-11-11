@@ -15,6 +15,11 @@ import os
 import sys
 from threading import Event, Thread
 from importlib import import_module
+from .progress import LABELS, TERMINAL, duration
+
+
+class WizardBack(Exception):
+    """返回上一组设置。"""
 
 
 def rich_console(stream):
@@ -123,6 +128,82 @@ class TerminalPanel:
                                title_align="left", border_style="bright_blue",
                                subtitle=Text("Ctrl+C 安全中断", style="dim")), refresh=True)
 
+    def draw_run(self, alias, snapshot, resources, view):
+        """显示同一快照的总览、模块明细或帮助。"""
+        event = snapshot["event"]
+        modules = snapshot["modules"]
+        terminal = snapshot["terminal"]
+        stage = " ".join(filter(None, (event.module, event.stage)))
+        if event.state in TERMINAL:
+            stage += f" · {LABELS[event.state]}"
+        elapsed = f"已用 {duration(snapshot['elapsed'])} · 阶段 {duration(snapshot['stage_elapsed'])}"
+        finished = sum(state in TERMINAL for state in modules.values())
+        overall = snapshot["overall"]
+        progress = f"总进度 {min(99, int(overall * 100)) if overall < 1 else 100}%" if overall is not None else ""
+        if modules:
+            progress = " · ".join(filter(None, (progress, f"已结束 {finished}/{len(modules)} 个模块")))
+        eta = f"总剩余时间 {duration(snapshot['total_eta'])}"
+        task = ""
+        if event.unit:
+            scale = 2**20 if event.unit == "字节" else 1
+            unit = "MiB" if scale != 1 else event.unit
+            completed = f"{event.done / scale:.1f}" if scale != 1 else str(event.done)
+            if event.total is not None:
+                total = f"{event.total / scale:.1f}" if scale != 1 else str(event.total)
+                completed += f"/{total}"
+            task = f"阶段 {completed} {unit}"
+            if snapshot["speed"] is not None:
+                rate_scale = 1 / scale if scale != 1 else 60
+                task += f" · {snapshot['speed'] * rate_scale:.1f} {unit}/{'秒' if scale != 1 else '分'}"
+            if snapshot["eta"] is not None and event.done < (event.total or 0):
+                task += f" · 预计剩余 {duration(snapshot['eta'])}"
+        if snapshot["stale"] >= 30 and not terminal and event.state == "running":
+            task = " · ".join(filter(None, (task, f"{duration(snapshot['stale'])} 未收到进度更新")))
+        final = LABELS.get(terminal, "")
+        lines = (final, stage, event.detail, progress, task, elapsed, eta)
+        if self.live is None:
+            self.write(" · ".join(filter(None, lines)) + "\n")
+            return
+
+        def component(module, name):
+            return getattr(import_module(f"{self.backend}.{module}"), name)
+
+        Text = component("text", "Text")
+        Group = component("console", "Group")
+        Panel = component("panel", "Panel")
+        Bar = component("progress_bar", "ProgressBar")
+        Columns = component("columns", "Columns")
+        Table = component("table", "Table")
+
+        def progress_bar(fraction):
+            grid = Table.grid(expand=True)
+            grid.add_row(Bar(total=1, completed=fraction))
+            return grid
+
+        rows = [Text(alias, style="bright_cyan"), Text(stage, style="bold bright_white")]
+        for line in (final, event.detail, progress, task, elapsed, eta, resources):
+            if line:
+                rows.append(Text(line))
+            if line and line == progress and overall is not None:
+                rows.append(progress_bar(overall))
+            if line and line == task and snapshot["fraction"] is not None:
+                rows.append(progress_bar(snapshot["fraction"]))
+        colors = {"passed": "green", "reused": "cyan", "failed": "red", "interrupted": "red", "running": "yellow"}
+        states = Group(Text("模块状态", style="bold"), *(
+            Text(f"{module}  {LABELS.get(state, state)}", style=colors.get(state, "dim"))
+            for module, state in modules.items()))
+        overview = Group(*rows)
+        width = self.live.console.width
+        if view == "?":
+            body = Group(Text("1 总览    2 模块明细    ? 帮助"),
+                         Text("Ctrl+C 安全中断"), Text("估时使用近期速度和匹配的本机运行记录。"))
+        elif view == "2":
+            body = Columns([states, overview], equal=True, expand=True) if width >= 100 else Group(states, overview)
+        else:
+            body = Columns([overview, states], equal=True, expand=True) if width >= 100 and modules else overview
+        self.live.update(Panel(body, title="黄土高原 FD-WT", title_align="left", border_style="bright_blue",
+                               subtitle="1 总览 · 2 模块 · ? 帮助 · Ctrl+C 中断"), refresh=True)
+
 
 def terminal_restore(stream):
     """探测显示流是否支持光标更新，返回原终端模式的恢复操作。"""
@@ -140,6 +221,8 @@ class WizardPanel:
         self.mode = mode
         self.stack = ExitStack()
         self.console = None
+        self.navigation = False
+        self.answers = {}
 
     def __enter__(self):
         if self.mode == "plain" or not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -165,6 +248,8 @@ class WizardPanel:
         """显示编号菜单。每项包含内部值、中文标签和用途说明。"""
         keys = {str(index): key for index, (key, _, _) in enumerate(options, 1)}
         labels = {key: label for key, label, _ in options}
+        saved = self.answers.get(prompt) if self.navigation else None
+        default = keys.get(saved, saved) if saved and keys.get(saved, saved) in labels else default
         rows = tuple((number, label, description, key == default)
                      for number, (key, label, description) in zip(keys, options))
         default_number = next((number for number, key in keys.items() if key == default), None)
@@ -180,10 +265,15 @@ class WizardPanel:
 
     def ask(self, prompt, check, default=None, *, details=(), section="运行设置", hint="", rows=()):
         """显示当前题与详情，返回校验后的输入。校验失败时在同一题显示原因。"""
+        remember = self.navigation and not section.startswith("05")
+        if remember:
+            default = self.answers.get(prompt, default) if not rows else default
         suffix = f" [默认：{default}]" if default is not None else " [必填]"
         instruction = hint or "输入内容后回车"
         if default is not None:
             instruction += " · 直接回车使用默认值"
+        if self.navigation:
+            instruction += " · 返回 / 帮助 / 退出"
         error = ""
         while True:
             if self.console is not None:
@@ -222,7 +312,19 @@ class WizardPanel:
                 if not value:
                     raise EOFError
             try:
-                return check(value.strip() or default)
+                value = value.strip() or default
+                if self.navigation:
+                    if value == "返回":
+                        raise WizardBack
+                    if value == "退出":
+                        raise KeyboardInterrupt
+                    if value == "帮助":
+                        error = "输入编号或题目要求的内容。返回可修改上一组，退出结束向导。"
+                        continue
+                result = check(value)
+                if remember:
+                    self.answers[prompt] = value
+                return result
             except ValueError as failure:
                 error = str(failure)
 
@@ -251,9 +353,12 @@ class LiveStatus:
 
     def __init__(self, mode, render):
         self.mode = mode
-        interactive = mode != "plain" and sys.stderr.isatty()
+        interactive = (mode != "plain" and sys.stderr.isatty()
+                       and (mode == "panel" or (sys.stdin.isatty() and sys.stdout.isatty())))
         self.panel = TerminalPanel(sys.stderr, interactive)
         self.render = render
+        self.view = "1"
+        self.keyboard = os.name == "nt" and sys.stdin.isatty() and sys.stderr.isatty()
         self.stop = Event()
         self.thread = Thread(target=self.refresh, daemon=True)
 
@@ -261,8 +366,7 @@ class LiveStatus:
         self.panel.__enter__()
         try:
             self.render()
-            if self.panel.live is not None:
-                self.thread.start()
+            self.thread.start()
         except BaseException:
             self.close()
             raise
@@ -270,7 +374,20 @@ class LiveStatus:
     def refresh(self):
         interval = 0.25  # technical constant
         while not self.stop.wait(interval):
+            if self.keyboard and self.panel.live is not None:
+                import msvcrt
+
+                self.poll_keys(msvcrt)
             self.render()
+
+    def poll_keys(self, keyboard):
+        """在 Windows 控制台消费视图快捷键和扩展键序列。"""
+        while keyboard.kbhit():
+            key = keyboard.getwch()
+            if key in ("\x00", "\xe0"):
+                keyboard.getwch()
+            elif key in ("1", "2", "?"):
+                self.view = key
 
     def close(self):
         self.stop.set()

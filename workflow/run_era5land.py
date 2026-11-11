@@ -20,6 +20,7 @@ from time import monotonic
 from uuid import uuid4
 
 from .freeze_m0 import atomic_write, index_lock, json_bytes
+from .progress import emit
 
 
 def csv_bytes(columns, rows):
@@ -98,7 +99,9 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
         raise ValueError("当前 M1/M2 只接入 ERA5-Land 及已实现的主规范和固定季节。")
     if not plan["resume"]:
         raise ValueError("M1/M2 需要续接正式冻结的 M0。请先单独执行 M0 正式冻结，再用同一别名运行。")
+    emit(progress, "M0", "核验冻结身份")
     record, identity, output, logs, bbox = frozen_context(root, plan, config_path, params, digest)
+    emit(progress, "M0", "冻结身份已核验", state="reused")
     try:
         import netCDF4
         import numpy
@@ -142,11 +145,14 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
         return receipt
 
     with index_lock(logs / ".m1_m2.lock"):
+        emit(progress, "M1", "核对验收回执")
         m1 = read_receipt("M1")
+        reused_m1 = m1 is not None
         if m1 is not None and m1["evidence_sha256"] != evidence_hash:
             raise ValueError("来源登记已变化，请使用新别名重新验收。")
         if m1 is None:
             started = monotonic()
+            emit(progress, "M1", "原始数据验收")
             files, checks, mappings, missing = audit_era5land(root, params, bbox, evidence, progress,
                                                             plan.get("runtime"))
             status = "passed" if not missing else (
@@ -176,6 +182,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                                              "n_accepted": accepted, "coverage_status": status}],
                        "m1_sample_flow": [{"stage": "原生文件验收", "n_before": len(files),
                                             "n_after": accepted, "reason": "文件缺失或验收待完成"}]}
+            emit(progress, "M1", "写入验收报告")
             output_files = []
             for name, rows in reports.items():
                 path = output / "reports" / f"{name}.csv"
@@ -184,21 +191,35 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
             m1 = {**base, "module_id": "M1", "status": status, "evidence_sha256": evidence_hash,
                   "input_files": [{"path": row["file_path"], "sha256": row["sha256"]}
                                   for row in files if "sha256" in row], "output_files": output_files}
+            emit(progress, "M1", "发布验收回执")
             publish("M1", m1, started)
+        emit(progress, "M1", "验收结束",
+             state="reused" if reused_m1 and m1["status"] == "passed" else m1["status"])
 
         result = {**plan, "run_id": record["run_id"], "module_status": {"M1": m1["status"]},
                   "m1_reports": str(output / "reports")}
         if plan["modules"][-1] == "M1" or m1["status"] != "passed":
             return result
 
-        def verify_raw():
-            for item in m1["input_files"]:
-                if digest(root / item["path"]) != item["sha256"]:
-                    raise ValueError(f"M1 原始文件哈希已变化：{item['path']}")
+        def verify_raw(stage):
+            paths = [(root / item["path"], item["sha256"]) for item in m1["input_files"]]
+            total = sum(path.stat().st_size for path, _ in paths)
+            done = 0
+            emit(progress, "M2", stage, total=total, unit="字节")
+            for path, checksum in paths:
+                def advance(size):
+                    nonlocal done
+                    done += size
+                    emit(progress, "M2", stage, path.name, done=done, total=total, unit="字节")
+
+                if digest(path, advance) != checksum:
+                    raise ValueError(f"M1 原始文件哈希已变化：{path.name}")
 
         started = monotonic()
-        verify_raw()
+        verify_raw("核验原始输入")
+        emit(progress, "M2", "核对预处理回执")
         m2 = read_receipt("M2")
+        reused_m2 = m2 is not None
         destination = (root / params["output"]["interim"] / "era5land_base" / plan["run_alias"]).resolve()
         if not destination.is_relative_to(root / "data/interim"):
             raise ValueError("M2 路径超出中间数据目录。")
@@ -210,8 +231,10 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                     with TemporaryDirectory(dir=destination.parent, prefix=".m2-") as temporary:
                         stage = Path(temporary) / "stage"
                         stage.mkdir()
+                        emit(progress, "M2", "日候归并")
                         prepare_era5land(root, stage, params, bbox, schema, progress, plan.get("runtime"))
-                        verify_raw()
+                        verify_raw("复核原始输入")
+                        emit(progress, "M2", "写入预处理清单")
                         atomic_write(stage / "run.json", json_bytes({**identity, "module": "M2",
                                                                     "status": "passed", "upstream": m1_link,
                                                                     "table_sha256": {path.name: digest(path)
@@ -220,6 +243,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                 except Exception:
                     update_status(logs, "M2", "failed")
                     raise
+            emit(progress, "M2", "校验预处理交接")
             saved = json.loads((destination / "run.json").read_bytes())
             expected = {"grid_manifest.parquet", "time_pentad_calendar.parquet", "run.json",
                         "grid_day_era5land.parquet", "grid_pentad_base_era5land.parquet"}
@@ -230,6 +254,8 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                 raise ValueError("已有 M2 目录与登记产物不匹配。")
             m2 = {**base, "module_id": "M2", "status": "passed", "input_files": [m1_link],
                   "output_files": [file_record(path) for path in sorted(destination.iterdir())]}
+            emit(progress, "M2", "发布预处理回执")
             publish("M2", m2, started)
         result["module_status"]["M2"] = m2["status"]
+        emit(progress, "M2", "预处理结束", state="reused" if reused_m2 else m2["status"])
         return {**result, "m2_interim": str(destination)}

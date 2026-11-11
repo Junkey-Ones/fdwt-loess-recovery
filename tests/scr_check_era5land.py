@@ -113,8 +113,17 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
                      encoding="utf-8")
     options = {"config_path": config_path, "run_alias": "2026-11-10_合成验证"}
     assert runner.run_module("M0", freeze=True, **options)["m0_audit"]["formal_freeze_written"]
-    outcome = runner.run_module("M2", **options)
+    from types import SimpleNamespace
+
+    events = []
+    outcome = runner.run_module("M2", **options, progress=SimpleNamespace(event=events.append))
     assert outcome["module_status"] == {"M1": "passed", "M2": "passed"}
+    for stage, expected in (("原始数据验收", len(entries)), ("日候归并", 72)):
+        counts = [event.done for event in events if event.stage == stage and event.done]
+        assert counts == list(range(1, expected + 1))
+    hashes = [event for event in events if event.stage == "核验原始输入"]
+    assert hashes[-1].done == hashes[-1].total == sum((tmp_path / item[0]).stat().st_size for item in entries)
+    assert events[-1].module == "M2" and events[-1].state == "passed"
     out = Path(outcome["m2_interim"])
     table = pq.read_table(out / "grid_pentad_base_era5land.parquet")
     assert table.num_rows == 6 * 73 * 4
@@ -135,6 +144,19 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
     for path in Path(outcome["m1_reports"]).glob("*.csv"):
         assert path.read_bytes() == (Path(comparison["m1_reports"]) / path.name).read_bytes()
     assert runner.run_module("M2", **options)["module_status"] == outcome["module_status"]
+    from workflow.progress import RunProgress
+
+    for attempt in range(3):
+        meter = RunProgress()
+        meter.on_stage_change = lambda: meter.observe(meter.snapshot())
+        repeated = runner.run_module("M2", **options, runtime={"profile": "low"}, progress=meter)
+        assert repeated["module_status"] == outcome["module_status"]
+        assert meter.snapshot()["modules"] == {"M0": "reused", "M1": "reused", "M2": "reused"}
+        assert ("M2" in meter.history) == (attempt == 2)
+        meter.finish("passed")
+        quality = meter.forecast_accuracy()["historical_total"]
+        assert (quality["estimates"] > 0) == (attempt == 2)
+        meter.save_history()
     support = tmp_path / "data/interim/synthetic_support.json"
     grid = pq.read_table(out / "grid_manifest.parquet").to_pylist()
     support.write_text(json.dumps([

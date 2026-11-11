@@ -9,7 +9,7 @@
 退出码：由统一入口定义。
 """
 from datetime import datetime, timedelta
-from hashlib import file_digest
+from hashlib import file_digest, sha256
 from pathlib import Path
 
 FIELDS = {
@@ -27,10 +27,16 @@ PRODUCT = "era5land"
 CUMULATIVE = "forecast_step_cumulative"
 
 
-def digest(path):
+def digest(path, advance=None):
     """流式计算文件 SHA-256。"""
     with path.open("rb") as source:
-        return file_digest(source, "sha256").hexdigest()
+        if advance is None:
+            return file_digest(source, "sha256").hexdigest()
+        checksum = sha256()
+        while chunk := source.read(4 * 2**20):
+            checksum.update(chunk)
+            advance(len(chunk))
+        return checksum.hexdigest()
 
 
 def era5land_years(params):
@@ -220,6 +226,7 @@ def audit_era5land(root, params, bbox, evidence, progress, runtime=None):
     reference = None
     import numpy as np
     from workflow.runtime import ordered_tasks, resolve_runtime
+    from workflow.progress import emit
 
     step_fields, negative_fields = set(), set()
     prior = {}
@@ -234,7 +241,6 @@ def audit_era5land(root, params, bbox, evidence, progress, runtime=None):
         batch = evidence.get(key, {})
         if not isinstance(batch, dict):
             raise ValueError(f"来源登记 {key} 须为映射。")
-        progress("M1 原始数据验收", relative.name, index / len(entries))
         row = {"file_id": relative.as_posix(), "file_path": relative.as_posix(),
                "product_code": PRODUCT, "native_variable_names": ",".join(fields),
                "time_start": start.isoformat(), "time_end": (stop - timedelta(hours=1)).isoformat()}
@@ -312,6 +318,7 @@ def audit_era5land(root, params, bbox, evidence, progress, runtime=None):
         check.update(acceptance_status=row["audit_status"], failed_items=row.get("audit_note", ""))
         files.append(row)
         checks.append(check)
+        emit(progress, "M1", "原始数据验收", relative.name, done=index + 1, total=len(entries), unit="文件")
     if not missing and (not {"tp", "sro", "ssro"} <= step_fields or not {"e", "pev"} <= negative_fields):
         missing.append({"product_code": PRODUCT, "period": "", "file_path": "",
                         "reason": "未找到非零处理步累计或向上为负的蒸发实值证据。"})

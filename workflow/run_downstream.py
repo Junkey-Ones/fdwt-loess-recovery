@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic
 
 from .freeze_m0 import atomic_write, index_lock, json_bytes
+from .progress import emit
 from .run_era5land import csv_bytes, frozen_context, run_era5land, update_status
 
 
@@ -43,7 +44,7 @@ def registered_inputs(root, path, digest):
     return datasets, [{"path": item["path"], "sha256": item["sha256"]} for item in files]
 
 
-def compute_module(module, tables, supplements, params, plan, matrix, stage=None, schema=None):
+def compute_module(module, tables, supplements, params, plan, matrix, stage=None, schema=None, progress=None):
     """从已核验的输入计算模块表及状态。"""
     import pyarrow.parquet as pq
     from src.M3.scr_build_climatology import build_climatology
@@ -95,7 +96,7 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             result.update(grid_climatology=climate, grid_pentad=pentads, grid_active_pentad=active)
         else:
             write_climatology(stage, tables["grid_pentad_base_era5land"], support, params,
-                              plan["product_combo"], schema)
+                              plan["product_combo"], schema, progress)
     elif module == "M4":
         columns = [*series_keys, "smp", "year", "pentad", "active_flag", "grid_version",
                    "soil_product", "precip_product", "phenology_mode", "phenology_fallback",
@@ -115,19 +116,29 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             event_groups[event["product"], event["grid_id"], event["support_id"]].append(event)
         names = ("event_master", "event_precip", "event_branch", "event_recovery_trajectory")
         result.update((name, []) for name in (*names, "wet_process_membership"))
-        for key, group in groupby(ordered_pentads(columns), key=lambda row: tuple(row[k] for k in series_keys[:3])):
+        groups = groupby(ordered_pentads(columns), key=lambda row: tuple(row[k] for k in series_keys[:3]))
+        for index, (key, group) in enumerate(groups, 1):
             pentads = list(group)
             values = derive_outcomes(event_groups.pop(key, ()), pentads, params)
             for name, rows in zip(names, values):
                 result[name].extend(rows)
             result["wet_process_membership"].extend(assign_wet_processes(values[0], values[2], pentads, params))
+            emit(progress, "M5", "派生格点结局", done=index, unit="格点")
         if event_groups:
             raise ValueError("部分事件找不到对应的完整格点候序列。")
         result["superblock_membership"] = build_superblocks(result["event_master"], read("grid_manifest"))
     elif module == "M6":
         daily = pq.ParquetFile(tables["grid_day_era5land"])
-        climate = background_climate(daily.iter_batches(
-            columns=["grid_id", "date", "p_mm", "t2m_c"]), params)
+        def climate_batches():
+            done = 0
+            total = daily.metadata.num_rows
+            for batch in daily.iter_batches(columns=["grid_id", "date", "p_mm", "t2m_c"]):
+                yield batch
+                done += batch.num_rows
+                emit(progress, "M6", "汇总背景气候", done=done, total=total, unit="记录")
+
+        climate = background_climate(climate_batches(), params)
+        emit(progress, "M6", "连接事件前暴露")
         static = {row["grid_id"]: row for row in extra("grid_static_covariates")}
         static = {key: {**static.get(key, {}), **value} for key, value in climate.items()}
         annual = extra("vegetation_grid_year")
@@ -291,7 +302,7 @@ def write_table(path, rows, definition):
     pq.write_table(arrow_table(path.stem, rows, definition), path)
 
 
-def write_climatology(stage, path, support, params, combo, definitions):
+def write_climatology(stage, path, support, params, combo, definitions, progress=None):
     """按完整格点时间序列计算 M3，逐批写入三张大表。"""
     from contextlib import ExitStack
     from itertools import groupby, islice
@@ -323,10 +334,13 @@ def write_climatology(stage, path, support, params, combo, definitions):
     with ExitStack() as stack:
         writers = [stack.enter_context(pq.ParquetWriter(stage / f"{name}.parquet", schema))
                    for name, schema in zip(names, schemas)]
+        done = 0
         while batch := list(islice(groups, 16)):
             outputs = build_climatology((row for group in batch for row in group), support, params, combo)
             for name, result, schema, writer in zip(names, outputs, schemas, writers):
                 writer.write_table(arrow_table(name, result, definitions[name], schema))
+            done += len(batch)
+            emit(progress, "M3", "气候态归并", done=done, unit="格点")
 
 
 def run_downstream(root, plan, config_path, params, load_config, progress):
@@ -368,9 +382,9 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
         index_outputs(json.loads(m2_path.read_bytes()))
         base_inputs = [item(m2_path), *evidence]
         downstream = plan["modules"][3:]
-        for index, module in enumerate(downstream):
+        for module in downstream:
             started = monotonic()
-            progress(module, "核对交接及模块状态", index / len(downstream))
+            emit(progress, module, "核对交接")
             stage_dir = destination / module
             receipt_path = stage_dir / "module_io.json"
             blocked = [key for key in dag[module]["requires"]
@@ -381,10 +395,12 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                 atomic_write(logs / f"module_io_{module}.json", json_bytes(dict(
                     run_id=record["run_id"], module_id=module, status="conditional_skipped",
                     details={"blocked_by": blocked}, input_files=[], output_files=[])))
+                emit(progress, module, "上游未放行", "、".join(blocked), state="conditional_skipped")
                 continue
             inputs = [*base_inputs, *(item(destination / key / "module_io.json")
                                       for key in dag[module]["requires"] if key not in ("M0", "M1", "M2"))]
-            if receipt_path.exists():
+            reused = receipt_path.exists()
+            if reused:
                 receipt = json.loads(receipt_path.read_bytes())
                 if receipt["run_id"] != record["run_id"] or receipt["input_files"] != inputs:
                     raise ValueError(f"{module} 输入已变化，请使用新别名。")
@@ -397,8 +413,10 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                     with TemporaryDirectory(dir=destination, prefix=".stage-") as tmp:
                         stage = Path(tmp) / module
                         stage.mkdir()
+                        emit(progress, module, "执行计算")
                         result, status, details = compute_module(module, tables, supplements, params, plan, matrix,
-                                                                 stage=stage, schema=schema)
+                                                                 stage=stage, schema=schema, progress=progress)
+                        emit(progress, module, "写入产物")
                         for name, rows in result.items():
                             definition = schema["event_master" if name == "event_master_base" else name]
                             write_table(stage / f"{name}.parquet", rows, definition)
@@ -462,6 +480,7 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                             })
                             atomic_write(stage / "figures/figure_manifest.json", json_bytes(figures))
                         atomic_write(stage / "run.json", json_bytes({**identity, "module": module, "status": status}))
+                        emit(progress, module, "核验输入输出哈希")
                         outputs = [{"path": (stage_dir / path.relative_to(stage)).relative_to(root).as_posix(),
                                     "sha256": digest(path)}
                                    for path in sorted(stage.rglob("*")) if path.is_file()]
@@ -470,12 +489,14 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                         receipt = dict(run_id=record["run_id"], module_id=module, status=status, details=details,
                                        input_files=inputs, output_files=outputs)
                         atomic_write(stage / receipt_path.name, json_bytes(receipt))
+                        emit(progress, module, "发布冻结交接")
                         stage.rename(stage_dir)
                     index_outputs(receipt)
                 except Exception:
                     update_status(logs, module, "failed")
                     raise
             statuses[module] = receipt["status"]
+            emit(progress, module, "发布交接与报告")
             atomic_write(logs / f"module_io_{module}.json", json_bytes(receipt))
             update_status(logs, module, receipt["status"])
             stamp = datetime.now(timezone.utc).isoformat()
@@ -513,5 +534,7 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                     "module_receipts": [item(path) for path in sorted(destination.glob("M*/module_io.json"))
                                         if path.parent.name in plan["modules"] and path.parent.name != "M8"],
                 }))
-            progress(module, f"状态 {receipt['status']}", (index + 1) / len(downstream))
+            state = receipt["status"]
+            emit(progress, module, "模块结束",
+                 state="reused" if reused and state in {"passed", "descriptive_only"} else state)
     return {**plan, "run_id": record["run_id"], "module_status": statuses, "downstream": str(destination), "m1_reports": upstream["m1_reports"]}

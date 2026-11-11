@@ -195,6 +195,7 @@ def prepare_era5land(root, destination, params, bbox, tables, progress, runtime=
     import pyarrow as pa
     import pyarrow.parquet as pq
     from workflow.runtime import ordered_tasks, resolve_runtime
+    from workflow.progress import emit
 
     settings = params["native_era5land"]
     first, last = era5land_years(params)
@@ -277,8 +278,6 @@ def prepare_era5land(root, destination, params, bbox, tables, progress, runtime=
             daily = {}
             for month in range(1, 13):
                 values = next(results)
-                progress("M2 日和候预处理", f"{year}-{month:02d}",
-                         ((year - first) * 12 + month) / ((last - first + 1) * 12))
                 n_days = len(values["p_mm"])
                 for field, array in values.items():
                     if field not in daily:
@@ -289,6 +288,9 @@ def prepare_era5land(root, destination, params, bbox, tables, progress, runtime=
                     write("grid_day", batch("grid_day", {key: value[offset:stop] for key, value in values.items()},
                                             {"date": [date(year, month, index + 1) for index in range(offset, stop)]}))
                 day_offset += n_days
+                if month < 12:
+                    emit(progress, "M2", "日候归并", f"{year}-{month:02d}",
+                         done=(year - first) * 12 + month, total=(last - first + 1) * 12, unit="月")
             for row in calendar[(year - first) * params["time"]["pentads_per_year"]:
                                 (year - first + 1) * params["time"]["pentads_per_year"]]:
                 start = (row["start_date"] - date(year, 1, 1)).days
@@ -296,3 +298,5 @@ def prepare_era5land(root, destination, params, bbox, tables, progress, runtime=
                                           for name, array in daily.items()}, params["time"])
                 keys = ("t_abs", "year", "pentad", "start_date", "end_date", "n_days")
                 write("grid_pentad_base", batch("grid_pentad_base", values, {key: [row[key]] for key in keys}))
+            emit(progress, "M2", "日候归并", f"{year}-12",
+                 done=(year - first + 1) * 12, total=(last - first + 1) * 12, unit="月")
