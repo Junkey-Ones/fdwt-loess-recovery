@@ -126,6 +126,14 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
     assert row["sm_deep_mm"] == pytest.approx(756)
     assert row["balance_mm"] == pytest.approx(-12)
     assert pq.ParquetFile(out / "grid_day_era5land.parquet").metadata.num_rows == (date(2021, 1, 1) - date(2015, 1, 1)).days * 4
+    serial = {**options, "run_alias": "2026-11-10_串行对照", "runtime": {"profile": "low"}}
+    assert runner.run_module("M0", freeze=True, **serial)["m0_audit"]["formal_freeze_written"]
+    comparison = runner.run_module("M2", **serial)
+    assert comparison["module_status"] == outcome["module_status"]
+    for path in out.glob("*.parquet"):
+        assert pq.read_table(path).equals(pq.read_table(Path(comparison["m2_interim"]) / path.name))
+    for path in Path(outcome["m1_reports"]).glob("*.csv"):
+        assert path.read_bytes() == (Path(comparison["m1_reports"]) / path.name).read_bytes()
     assert runner.run_module("M2", **options)["module_status"] == outcome["module_status"]
     support = tmp_path / "data/interim/synthetic_support.json"
     grid = pq.read_table(out / "grid_manifest.parquet").to_pylist()
@@ -142,13 +150,25 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
     }}), encoding="utf-8")
     route1 = runner.run_module("route1", **options)
     assert route1["module_status"]["M3"] == "passed"
+    from workflow.run_downstream import compute_module
+
+    old_m3, _, _ = compute_module("M3", {path.stem: path for path in out.glob("*.parquet")},
+                                 {"grid_support": support}, params, route1, {})
+    for name, rows in old_m3.items():
+        actual = pq.read_table(Path(route1["downstream"]) / "M3" / f"{name}.parquet")
+        assert actual.to_pylist() == [{column: row.get(column) for column in actual.column_names} for row in rows]
     assert route1["module_status"]["M10"] == "descriptive_only"
     figures = tmp_path / "outputs" / options["run_alias"] / "figures"
     figure_manifest = json.loads((figures / "figure_manifest.json").read_bytes())
+    review = figures.parent / "review"
+    assert all(row["passed"] for row in json.loads((review / "review_schema_validation.json").read_bytes()).values())
+    assert (review / "review_table_totals.csv").is_file()
     assert len(figure_manifest) == 7 and all(item["status"] == "omitted" for item in figure_manifest)
     assert "M8" not in route1["module_status"]
     full = runner.run_module("full", **options)
     assert full["module_status"]["M8"] == "exited"
+    assert (figures.parent / "reports/route2_exit_report.md").is_file()
+    assert (figures.parent / "tables/route2_sample_audit.csv").is_file()
     assert full["module_status"]["M10"] == "descriptive_only"
     support.write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="哈希不符"):

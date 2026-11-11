@@ -640,6 +640,16 @@ tables:
     primary_key:
     - episode_id
     - route2_version
+  route2_sample_audit:
+    columns: [route2_version, H, outcome, n_event, n_blocks, n_without_block]
+    primary_key: [route2_version, outcome]
+  route2_cif:
+    columns: [route2_version, H, strict, followup_pentad, n_at_risk, n_exit_a, n_exit_b, n_censored,
+              cif_a, cif_b, survival, probability_c]
+    primary_key: [route2_version, strict, followup_pentad]
+  route2_model_result:
+    columns: [route2_version, H, strict, followup_pentad, hazard_a, hazard_b, cif_a, cif_b, survival, probability_c]
+    primary_key: [route2_version, strict, followup_pentad]
   sample_flow:
     columns:
     - analysis_id
@@ -770,11 +780,20 @@ tables:
     - status
 
   q1_annual:
-    columns: [year, n_event, RT, delta_SMP, RR]
+    columns: [year, n_event, RT, delta_SMP, RR, RT_q25, RT_q75, delta_SMP_mean, RR_mean]
     primary_key: [year]
+  q1_recovery_risk:
+    columns: [followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status]
+    primary_key: [followup_pentad]
+  q1_recovery_risk_sensitivity:
+    columns: [version, H, followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status]
+    primary_key: [version, followup_pentad]
   q2_annual:
     columns: [year, n_recovered, n_known, n_positive, n_unknown, proportion]
     primary_key: [year]
+  q2_lag_result:
+    columns: [metric, domain, n_event, median, q25, q75]
+    primary_key: [metric]
   cross_product_event_match:
     columns: [product_combo, grid_id, main_episode_id, alt_episode_id, delta_ts, delta_tmin]
     primary_key: [product_combo, main_episode_id]
@@ -784,6 +803,12 @@ tables:
   review_event_recalc:
     columns: [episode_id, passed, issues]
     primary_key: [episode_id]
+  review_table_totals:
+    columns: [check, n_expected, n_actual, passed]
+    primary_key: [check]
+  missing_exclusion_unknown_summary:
+    columns: [category, reason, n_event, denominator]
+    primary_key: [category, reason]
 
   wet_process_membership:
     columns: [wet_process_id, product_combo, grid_id, support_id, t_abs]
@@ -793,8 +818,13 @@ tables:
     primary_key: [block_id]
 
   trend_estimate:
-    columns: [metric, n_years, sen_slope, status]
+    columns: [metric, n_years, sen_slope, status, p_mk, p_hamed_rao, ljung_box_lag1_p,
+              variance_factor, primary_test, primary_p, primary_p_holm]
     primary_key: [metric]
+  trend_estimate_sensitivity:
+    columns: [min_valid_years, metric, n_years, sen_slope, status, p_mk, p_hamed_rao, ljung_box_lag1_p,
+              variance_factor, primary_test, primary_p, primary_p_holm]
+    primary_key: [min_valid_years, metric]
   cross_product_match_summary:
     columns: [product_combo, n_main, n_alt, n_match, main_hit, alt_hit, jaccard]
     primary_key: [product_combo]

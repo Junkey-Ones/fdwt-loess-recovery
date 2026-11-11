@@ -193,6 +193,7 @@ infer:
   design_effect_formula: n/[1+(m-1)rho]
 trend:
   min_valid_years: 18
+  sensitivity_min_valid_years: [15, 20]
   year_min_events: 10
   autocorr_trigger: ljung_box_lag1_p<0.05
 block:

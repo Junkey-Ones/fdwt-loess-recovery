@@ -4,7 +4,7 @@
 """
 from itertools import groupby
 
-def detect_events(rows, params):
+def detect_events(rows, params, *, ordered=False):
     """按格点及连续候识别事件，返回事件和候选审计列表。"""
     rules = params["drought"]
     recovery = params["recovery"]["terminate_smp"]
@@ -12,7 +12,9 @@ def detect_events(rows, params):
     events, audit = [], []
     first_year, last_year = params["time"]["year_start"], params["time"]["year_end"]
     group_key = lambda row: (row["product_combo"], row["grid_id"], row["support_id"])
-    for key, group in groupby(sorted(rows, key=lambda row: (*group_key(row), row["t_abs"])), group_key):
+    if not ordered:
+        rows = sorted(rows, key=lambda row: (*group_key(row), row["t_abs"]))
+    for key, group in groupby(rows, group_key):
         series = {row["t_abs"]: row for row in group}
         anchor = None
         consumed = -1

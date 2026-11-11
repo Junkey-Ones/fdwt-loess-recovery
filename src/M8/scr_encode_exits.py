@@ -7,9 +7,9 @@ from collections import Counter
 from src.M5.scr_derive_outcomes import index_series, precip_qualifies
 
 
-def encode_exits(events, rows, params, blocks=None):
+def encode_exits(events, rows, params, blocks=None, *, horizon=None, version="main"):
     """从事件起点随访，未知接续单列，C 只在完整 H 时编码。"""
-    h = params["route2"]["h"]
+    h = params["route2"]["h"] if horizon is None else horizon
     series = index_series(rows)
     last_by_grid = {key: max(lookup) for key, lookup in series.items()}
     person, exits = [], []
@@ -45,7 +45,7 @@ def encode_exits(events, rows, params, blocks=None):
                                first_exit_t_abs=t if exit_type else None))
             if reason or exit_type:
                 strict = exit_type == "B" and event.get("F_R_subtype") == "post"
-                exits.append(dict(episode_id=event["episode_id"], route2_version="main", H=h,
+                exits.append(dict(episode_id=event["episode_id"], route2_version=version, H=h,
                                   exit_type=exit_type, exit_time=step if exit_type else None,
                                   censored=reason is not None, censor_time=step if reason else None,
                                   censor_reason=reason, exit_type_unknown=unknown, exit_A_strict=exit_type=="A" or strict,
@@ -64,5 +64,5 @@ def encode_exits(events, rows, params, blocks=None):
         reasons.append("可用空间块不足")
     gate = {"counts": {name: counts[name] for name in ("A", "B", "C")}, "n_blocks": len(observed_blocks),
             "n_censored": counts[None], "status": "exited" if reasons else "descriptive_only",
-            "reasons": reasons or ["原因别模型及推断门槛待实现"]}
+            "reasons": reasons}
     return person, exits, gate

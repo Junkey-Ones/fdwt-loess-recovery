@@ -1,6 +1,10 @@
 # 编排层：以 dag.yaml 为依赖来源。模块执行统一交给运行入口。
 from pathlib import Path
+import sys
 
+sys.path.insert(0, str(Path(workflow.basedir).resolve().parent))
+
+from workflow.freeze_m0 import atomic_write, json_bytes
 from workflow.run_module import DEFAULT_CONFIG, load_config, plan_modules, run_module, validate_alias
 
 dag = load_config(Path(workflow.basedir) / "dag.yaml")
@@ -15,23 +19,31 @@ logs = Path(load_config(DEFAULT_CONFIG)["output"]["logs"]) / alias
 def receipt(module):
     return str(logs / f"module_io_{module}.json")
 
+completion = str(logs / f"snakemake_{target}.json")
+
 rule all:
     input:
-        [receipt(module) for module in requested]
+        completion
 
-def prerequisites(wildcards):
-    info = dag["modules"][wildcards.module]
-    dependencies = info["requires"] + [item for item in info.get("optional", []) if item in selected]
-    return [receipt(module) for module in dependencies]
-
-rule module:
+rule selected_workflow:
     input:
-        prerequisites
+        [] if target == "M0" else [receipt("M0")]
     output:
-        str(logs / "module_io_{module}.json")
-    wildcard_constraints:
-        module="|".join(selected)
+        completion
     run:
-        run_module(wildcards.module, run_alias=alias,
-                   product_combo=config.get("product_combo"),
-                   variant=config.get("variant", "main"))
+        if target == "M0" and Path(receipt("M0")).is_file():
+            raise ValueError("该别名已冻结，请直接使用已冻结别名运行下游。")
+        else:
+            result = run_module(target, run_alias=alias, freeze=target == "M0",
+                                product_combo=config.get("product_combo"),
+                                variant=config.get("variant", "main"),
+                                runtime=config.get("runtime"))
+            if target == "M0" and not result["m0_audit"]["formal_freeze_written"]:
+                raise ValueError("M0 未通过正式冻结。")
+            for module in selected:
+                status = result.get("module_status", {}).get(module)
+                if module != "M0" and (status is None or status == "failed" or
+                                       (status == "exited" and module != "M8")):
+                    raise ValueError(f"{module} 未完成放行，状态为 {status}。")
+            atomic_write(Path(output[0]), json_bytes({"run_id": result["run_id"], "target": target}),
+                         replace=True)

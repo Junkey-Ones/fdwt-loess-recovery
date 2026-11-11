@@ -84,8 +84,8 @@ def aggregate_pentad(days, config):
     return result
 
 
-def spatial_grid(lat, lon, bbox, resolution, radius_km, version):
-    """按纬度降序和经度升序生成格点键并计算实际矩形交叠面积。"""
+def spatial_indices(lat, lon, bbox, resolution):
+    """返回研究区内按纬度降序和经度升序排列的轴索引。"""
     import numpy as np
 
     west, south, east, north = bbox
@@ -94,6 +94,16 @@ def spatial_grid(lat, lon, bbox, resolution, radius_km, version):
     ix = np.argsort(lon)
     iy = iy[(lat[iy] + half > south) & (lat[iy] - half < north)]
     ix = ix[(lon[ix] + half > west) & (lon[ix] - half < east)]
+    return iy, ix
+
+
+def spatial_grid(lat, lon, bbox, resolution, radius_km, version):
+    """按排序后的轴生成格点键并计算实际矩形交叠面积。"""
+    import numpy as np
+
+    west, south, east, north = bbox
+    half = resolution / 2
+    iy, ix = spatial_indices(lat, lon, bbox, resolution)
     rows = []
     for y in lat[iy]:
         for x in lon[ix]:
@@ -107,13 +117,84 @@ def spatial_grid(lat, lon, bbox, resolution, radius_km, version):
     return iy, ix, rows
 
 
-def prepare_era5land(root, destination, params, bbox, tables, progress):
+def monthly_values(task):
+    """读取一个月的原生场，按切片字节预算归约为日尺度数组。"""
+    from netCDF4 import Dataset
+    import numpy as np
+
+    year, month, paths, following, bbox, resolution, settings = task
+    next_start = date(year + (month == 12), month % 12 + 1, 1)
+    n_days = (next_start - date(year, month, 1)).days
+    scale = settings["mm_per_m"]
+
+    def axes(source):
+        time_name = "valid_time" if "valid_time" in source.variables else "time"
+        lat, lon = (np.asarray(source[name][:]) for name in ("latitude", "longitude"))
+        iy, ix = spatial_indices(lat, lon, bbox, resolution)
+        return time_name, iy, ix
+
+    def read(source, coords, name, start, stop):
+        time_name, iy, ix = coords
+        field = read_field(source, name, time_name, slice(start, stop),
+                           slice(iy.min(), iy.max() + 1), slice(ix.min(), ix.max() + 1))
+        return field[:, ::-1 if iy[0] > iy[-1] else 1, ::-1 if ix[0] > ix[-1] else 1]
+
+    def daily_mean(array):
+        # 保留原空间索引生成的时间连续布局，避免改变小时求和次序。
+        array = np.asfortranarray(array)
+        return array.reshape(-1, 24, *array.shape[1:]).mean(axis=1)
+
+    values = {}
+    with Dataset(paths["instant"]) as source:
+        coords = axes(source)
+        _, iy, ix = coords
+        bytes_per_day = 24 * len(iy) * len(ix) * np.dtype(np.float64).itemsize
+        days_per_batch = max(1, (64 * 2**20) // bytes_per_day)
+        chunks = range(0, n_days, days_per_batch)
+        for start in chunks:
+            stop = min(n_days, start + days_per_batch)
+            a, b = start * 24, stop * 24
+            root_soil = sum(read(source, coords, f"swvl{i}", a, b) * thickness
+                            for i, thickness in enumerate(settings["root_layer_thickness_m"], 1))
+            part = {
+                "sm_0_100_mm": daily_mean(root_soil) * scale,
+                "sm_deep_mm": daily_mean(read(source, coords, "swvl4", a, b))
+                * settings["deep_layer_thickness_m"] * scale,
+                "t2m_c": daily_mean(read(source, coords, "t2m", a, b)) - settings["kelvin_offset"],
+            }
+            for field, array in part.items():
+                if field not in values:
+                    values[field] = np.empty((n_days, *array.shape[1:]), dtype=float)
+                values[field][start:stop] = array
+    for group in ("accumulated", "runoff_components"):
+        with Dataset(paths[group]) as source, Dataset(following[group]) as next_source:
+            coords, next_coords = axes(source), axes(next_source)
+            for field in FIELDS[group]:
+                output = np.empty_like(values["t2m_c"])
+                for start in chunks:
+                    stop = min(n_days, start + days_per_batch)
+                    a, b = start * 24, stop * 24
+                    if stop == n_days:
+                        current = read(source, coords, field, a, b)
+                        midnight = read(next_source, next_coords, field, 0, 1)[0]
+                    else:
+                        data = read(source, coords, field, a, b + 1)
+                        current, midnight = data[:-1], data[-1]
+                    output[start:stop] = daily_flux(field, current, midnight, settings)
+                values[FLUX_NAMES[field]] = output
+    values["runoff_mm"] = values["runoff_surface_mm"] + values["runoff_subsurface_mm"]
+    values["balance_mm"] = values["p_mm"] - values["et_loss_mm"] - values["runoff_mm"]
+    return values
+
+
+def prepare_era5land(root, destination, params, bbox, tables, progress, runtime=None):
     """按年流式写日表和候表。调用方须先校验 M1 哈希回执。"""
-    from contextlib import ExitStack
+    from contextlib import ExitStack, closing
     from netCDF4 import Dataset
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
+    from workflow.runtime import ordered_tasks, resolve_runtime
 
     settings = params["native_era5land"]
     first, last = era5land_years(params)
@@ -151,29 +232,37 @@ def prepare_era5land(root, destination, params, bbox, tables, progress):
         y = radius*factor*(np.cos(lat0)*np.sin(lat)-np.sin(lat0)*np.cos(lat)*np.cos(dlon))
         cell["block_id"] = f"{int(np.floor(x/size))}:{int(np.floor(y/size))}"
     save_rows("grid_manifest", grid)
-    grid_ids = [row["grid_id"] for row in grid]
-
-    def load(path, fields, selection):
-        with Dataset(path) as source:
-            time_name, _, lat, lon = native_axes(source)
-            iy, ix, _ = spatial_grid(lat, lon, bbox, params["grid"]["resolution_deg"],
-                                      settings["earth_radius_km"], version)
-            return {name: read_field(source, name, time_name, selection)[:, iy][:, :, ix]
-                    for name in fields}
+    grid_ids = pa.array([row["grid_id"] for row in grid])
 
     def batch(name, values, time_columns):
-        n = len(grid_ids)
+        width = len(grid_ids)
         valid = np.logical_and.reduce([np.isfinite(values[field]) for field in (*STATE, *FLUX)]).ravel()
-        columns = {"product_code": [PRODUCT] * n, "grid_version": [version] * n,
-                   "grid_id": grid_ids, "support_id": ["own_full"] * n,
+        n = len(valid)
+        columns = {"product_code": pa.repeat(PRODUCT, n), "grid_version": pa.repeat(version, n),
+                   "grid_id": pa.concat_arrays([grid_ids] * (n // width)),
+                   "support_id": pa.repeat("own_full", n),
                    "valid_native_area_frac": valid.astype(float),
                    "qc_status": np.where(valid, "passed", "missing"),
                    "missing_reason": np.where(valid, "", "原生时段缺测")}
-        columns.update({key: [value] * n for key, value in time_columns.items()})
+        columns.update({key: pa.concat_arrays([pa.repeat(value, width) for value in times])
+                        for key, times in time_columns.items()})
         columns.update({key: pa.array(value.ravel(), from_pandas=True) for key, value in values.items()})
         return pa.table({key: columns[key] for key in tables[name]["columns"]})
 
+    resources = runtime or resolve_runtime({"profile": "low"})
+
+    def month_tasks():
+        for year in range(first, last + 1):
+            for month in range(1, 13):
+                next_year, next_month = year + (month == 12), month % 12 + 1
+                paths = {group: monthly[year, month, group] for group in FIELDS}
+                following = {group: monthly.get((next_year, next_month, group), terminal)
+                             for group in ("accumulated", "runoff_components")}
+                yield year, month, paths, following, bbox, params["grid"]["resolution_deg"], settings
+
     with ExitStack() as stack:
+        results = stack.enter_context(closing(ordered_tasks(
+            monthly_values, month_tasks(), resources, task_gib=0.75, reads_disk=True)))
         writers = {}
 
         def write(name, table):
@@ -187,38 +276,18 @@ def prepare_era5land(root, destination, params, bbox, tables, progress):
             year_days = (date(year + 1, 1, 1) - date(year, 1, 1)).days
             daily = {}
             for month in range(1, 13):
+                values = next(results)
                 progress("M2 日和候预处理", f"{year}-{month:02d}",
-                         ((year - first) * 12 + month - 1) / ((last - first + 1) * 12))
-                raw = load(monthly[year, month, "instant"], FIELDS["instant"], slice(None))
-                scale = settings["mm_per_m"]
-                root_soil = sum(raw[f"swvl{i}"] * thickness
-                                for i, thickness in enumerate(settings["root_layer_thickness_m"], 1))
-                shape = (-1, 24, *root_soil.shape[1:])
-                values = {"sm_0_100_mm": root_soil.reshape(shape).mean(axis=1) * scale,
-                          "sm_deep_mm": raw["swvl4"].reshape(shape).mean(axis=1)
-                          * settings["deep_layer_thickness_m"] * scale,
-                          "t2m_c": raw["t2m"].reshape(shape).mean(axis=1) - settings["kelvin_offset"]}
-                del raw, root_soil
-                next_year, next_month = year + (month == 12), month % 12 + 1
-                for group in ("accumulated", "runoff_components"):
-                    fields = FIELDS[group]
-                    path = monthly.get((next_year, next_month, group), terminal)
-                    midnight = load(path, fields, slice(0, 1))
-                    raw = load(monthly[year, month, group], fields, slice(None))
-                    for field in fields:
-                        values[FLUX_NAMES[field]] = daily_flux(field, raw[field], midnight[field][0], settings)
-                    del raw
-                values["runoff_mm"] = values["runoff_surface_mm"] + values["runoff_subsurface_mm"]
-                values["balance_mm"] = values["p_mm"] - values["et_loss_mm"] - values["runoff_mm"]
+                         ((year - first) * 12 + month) / ((last - first + 1) * 12))
                 n_days = len(values["p_mm"])
                 for field, array in values.items():
                     if field not in daily:
                         daily[field] = np.empty((year_days, *array.shape[1:]), dtype=float)
                     daily[field][day_offset:day_offset + n_days] = array
-                for index in range(n_days):
-                    day = date(year, month, index + 1)
-                    write("grid_day", batch("grid_day", {key: value[index] for key, value in values.items()},
-                                            {"date": day}))
+                for offset in range(0, n_days, 4):
+                    stop = min(n_days, offset + 4)
+                    write("grid_day", batch("grid_day", {key: value[offset:stop] for key, value in values.items()},
+                                            {"date": [date(year, month, index + 1) for index in range(offset, stop)]}))
                 day_offset += n_days
             for row in calendar[(year - first) * params["time"]["pentads_per_year"]:
                                 (year - first + 1) * params["time"]["pentads_per_year"]]:
@@ -226,4 +295,4 @@ def prepare_era5land(root, destination, params, bbox, tables, progress):
                 values = aggregate_pentad({name: array[start:start + row["n_days"]]
                                           for name, array in daily.items()}, params["time"])
                 keys = ("t_abs", "year", "pentad", "start_date", "end_date", "n_days")
-                write("grid_pentad_base", batch("grid_pentad_base", values, {key: row[key] for key in keys}))
+                write("grid_pentad_base", batch("grid_pentad_base", values, {key: [row[key]] for key in keys}))

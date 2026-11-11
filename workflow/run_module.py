@@ -135,6 +135,7 @@ def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
         "time": now.isoformat(),
         "message": "M0 冻结前审计完成，区域分析未放行",
         "run_alias": plan["run_alias"],
+        "runtime": plan["runtime"],
         "stdout": report,
         "stderr": [row["detail"] for row in report["checks"] if row["status"] != "passed"],
     }
@@ -158,8 +159,11 @@ def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
 
 def run_module(module_id, config_path=DEFAULT_CONFIG, run_id=None, run_alias=None,
                resume=True, overwrite_frozen=False, *, product_combo=None,
-               variant="main", dry_run=False, freeze=False, progress=None):
+               variant="main", dry_run=False, freeze=False, progress=None, runtime=None):
     """统一运行入口。预检只读，正式执行须匹配所选模块的冻结契约。"""
+    from .runtime import resolve_runtime
+
+    resources = resolve_runtime(runtime)
     alias = validate_alias(run_alias)
     if overwrite_frozen:
         raise ValueError("冻结产物禁止覆盖。")
@@ -177,7 +181,7 @@ def run_module(module_id, config_path=DEFAULT_CONFIG, run_id=None, run_alias=Non
     if variant not in matrix["selectable_variants"]:
         raise ValueError("规范变体尚未放行。")
     plan = {"modules": modules, "run_alias": alias, "run_id": run_id,
-            "product_combo": product, "variant": variant, "resume": resume}
+            "product_combo": product, "variant": variant, "resume": resume, "runtime": resources}
     if freeze and (dry_run or modules != ["M0"]):
         raise ValueError("正式冻结只能用于单独运行 M0，且不能与预检同时使用。")
     if dry_run:
@@ -212,6 +216,8 @@ def execute_plan(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
 
 def wizard(args, panel):
     """按中文问答收集与高级入口共用的控制信息。"""
+    from .runtime import resolve_runtime, runtime_lines
+
     dag = load_config(ROOT / "workflow" / "dag.yaml")
     params = load_config(args.config_path)
     matrix = load_config(ROOT / "config" / "specification_matrix.yaml")
@@ -272,23 +278,43 @@ def wizard(args, panel):
         ("panel", "彩色实时面板", "要求终端支持光标更新"),
         ("plain", "逐行文本", "适用于管道、日志收集和 CI"),
     ), "auto", section="04  显示方式", check=check_progress)
+    profile = panel.menu("选择本机运行档位", (
+        ("auto", "自动", "根据可用内存限制进程和读盘并发"),
+        ("low", "低占用", "最多 2 个工作进程、4 GiB 内存、1 路读取"),
+        ("custom", "自定义", "输入三个资源上限"),
+    ), "auto", section="05  计算资源")
+    args.runtime = {"profile": profile}
+    if profile == "custom":
+        def custom_resources(value):
+            parts = (value or "").split()
+            if len(parts) != 3 or not all(part.isdecimal() for part in parts):
+                raise ValueError("请输入三个以空格分隔的正整数。")
+            request = dict(zip(("workers", "memory_gib", "io_workers"), map(int, parts)))
+            request["profile"] = "custom"
+            resolve_runtime(request)
+            return request
+
+        args.runtime = panel.ask("输入进程数、内存 GiB、读盘并发", custom_resources,
+                                 section="05  计算资源", hint="例如 4 6 2")
+    resources = resolve_runtime(args.runtime)
     selected = dag["targets"].get(target, args.modules)
     ordered = plan_modules(dag, selected)
     m0_audit = ordered == ["M0"]
     actions = (("start", "开始 M0 冻结前审计", "检查登记并写入独立审计日志"),
                ("freeze", "正式冻结 M0", "审计通过后封存协议并登记运行编号")) if m0_audit else (
         ("start", "开始预检", "检查选项与依赖"),)
-    if ordered in (["M0", "M1"], ["M0", "M1", "M2"]):
+    if not m0_audit:
         if (run_logs / "module_io_M0.json").is_file():
-            actions = (("execute", "执行已冻结的 ERA5-Land 模块", "使用同一 M0 冻结别名"), *actions)
+            actions = (("execute", "执行已选模块", "使用同一 M0 冻结别名"), *actions)
         else:
             actions = (("start", "开始预检", "此别名尚未正式冻结 M0。请先单独选择 M0 并正式冻结，再用同一别名执行"),)
     action = panel.menu("核对设置并确认", (*actions,
         ("cancel", "退出向导", "结束本次操作"),
-    ), section="05  确认计划", check=confirm, details=(
+    ), section="06  确认计划", check=confirm, details=(
         f"模块顺序  {' → '.join(ordered)}",
         f"运行版本  {args.run_alias}（{'全新' if args.new else '续接现有别名'}）",
         f"数据组合  {args.product_combo}    规范  {args.variant}",
+        *runtime_lines(resources),
         *paths,
     ))
     args.dry_run = not m0_audit and action != "execute"
@@ -305,6 +331,8 @@ def confirm(value):
 
 def main(argv=None):
     """运行中文向导或高级入口，返回协议规定的进程退出码。"""
+    from .runtime import memory_gib, resolve_runtime, runtime_lines
+
     parser = ChineseParser(description="黄土高原 FD-WT 流水线", formatter_class=ChineseHelp, add_help=False)
     parser._positionals.title = "位置参数"
     parser._optionals.title = "选项"
@@ -319,6 +347,10 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="仅校验运行计划")
     parser.add_argument("--freeze", action="store_true", help="单独运行 M0 并正式冻结协议")
     parser.add_argument("--progress", choices=["auto", "panel", "plain"], default="auto", help="进度显示模式")
+    parser.add_argument("--runtime-profile", choices=["auto", "low", "custom"], default="auto", help="本机运行档位")
+    parser.add_argument("--workers", type=int, help="自定义档工作进程上限")
+    parser.add_argument("--memory-gib", type=int, help="自定义档内存预算 GiB")
+    parser.add_argument("--io-workers", type=int, help="自定义档读盘并发上限")
     args = parser.parse_args(argv)
     interactive = not (sys.argv[1:] if argv is None else argv)
     started = monotonic()
@@ -328,29 +360,43 @@ def main(argv=None):
                 args = wizard(args, panel)
         elif not args.modules:
             raise ValueError("高级入口须指定模块或运行目标。")
+        else:
+            args.runtime = {"profile": args.runtime_profile, **{
+                key: getattr(args, key) for key in ("workers", "memory_gib", "io_workers")
+                if getattr(args, key) is not None
+            }}
+        resources = resolve_runtime(args.runtime)
+        effective = resources["effective"]
         validate_progress(parser, argparse.Namespace(progress=args.progress, dry_run=False))
         targets = args.modules[0] if len(args.modules) == 1 else args.modules
         m0_audit = targets == "M0" and not args.dry_run
         current = ["正在审计" if m0_audit else "正在预检", "核对依赖和运行选项", 0.0]
 
         def report_progress(step, detail, fraction):
+            changed = step != current[0]
             current[:] = [step, detail, fraction]
-            if status.panel.live is None and (fraction == 0 or detail.endswith("-01")):
+            if status.panel.live is None and (changed or fraction == 1 or detail.endswith("-01")):
                 sys.stderr.write(f"{step}  {detail}\n")
 
         def render():
+            available = memory_gib()[1]
+            statistics = f"{effective['workers']} 进程上限 · {effective['memory_gib']} GiB 预算"
+            if available is not None:
+                statistics += f" · 系统可用 {available:.2f} GiB"
             status.panel.draw("黄土高原 FD-WT", args.run_alias,
                               current[0], current[1],
-                              "目标 " + "、".join(args.modules),
+                              statistics,
                               f"耗时 {monotonic() - started:.2f} 秒", current[2])
 
         status = LiveStatus(args.progress, render)
         try:
             status.start()
+            if status.panel.live is None:
+                sys.stderr.write("\n".join(runtime_lines(resources)) + "\n")
             plan = run_module(targets, args.config_path, args.run_id, args.run_alias,
                               not args.new, product_combo=args.product_combo,
                               variant=args.variant, dry_run=args.dry_run, freeze=args.freeze,
-                              progress=report_progress)
+                              progress=report_progress, runtime=args.runtime)
         finally:
             status.close()
         report = plan.get("m0_audit")

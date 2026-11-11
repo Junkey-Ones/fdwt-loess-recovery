@@ -45,6 +45,23 @@ def test_preview_and_production_are_distinct():
         run_module("route1", run_alias=alias, overwrite_frozen=True, dry_run=True)
 
 
+def test_runtime_profiles_are_operational_only(monkeypatch):
+    """确认预算随本机内存下调，非法并发在执行前被拦截。"""
+    from workflow import runtime
+
+    monkeypatch.setattr(runtime, "memory_gib", lambda: (15.75, 3.5))
+    automatic = runtime.resolve_runtime()
+    low = runtime.resolve_runtime({"profile": "low"})
+    assert automatic["effective"]["memory_gib"] == 2.5
+    assert low["effective"]["memory_gib"] == 2.5
+    assert low["effective"]["io_workers"] == 1
+    assert automatic["reasons"]
+    with pytest.raises(ValueError, match="工作进程上限"):
+        runtime.resolve_runtime({"profile": "custom", "workers": 1, "memory_gib": 2, "io_workers": 2})
+    with pytest.raises(MemoryError, match="内存预算"):
+        list(runtime.ordered_tasks(abs, [-1], low, task_gib=3))
+
+
 def test_seed_must_be_registered():
     """种子未登记时禁止生成正式运行身份。"""
     params = load_config(ROOT / "config" / "params.yaml")

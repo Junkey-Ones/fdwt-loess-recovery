@@ -8,7 +8,10 @@ from src.M3.scr_build_climatology import gringorten
 from src.M4.scr_detect_events import detect_events
 from src.M5.scr_derive_outcomes import derive_outcomes
 from src.M6.scr_link_exposures import link_exposures
-from src.M7.scr_route1_summary import holm, recovery_risk, summarize
+from src.M7.scr_route1_summary import holm, recovery_risk, summarize, summarize_lags, trend_estimates
+from src.M7.scr_fit_recovery_risk import fit_grouped_cloglog, natural_spline, recovery_time_baseline
+from src.M8.scr_describe_exits import cumulative_incidence, sample_audit
+from src.M8.scr_fit_cause_specific import fit_cause_specific
 from src.M8.scr_encode_exits import encode_exits
 from src.M9.scr_match_events import match_grid_events
 from src.M10.scr_review_results import review_events
@@ -43,6 +46,12 @@ def test_event_outcomes_and_review(params):
     assert len(rain) == 1
     assert {row["branch"] for row in branches} == {"F_R", "F_Z"}
     assert review_events(master, rows, params)[0]["passed"]
+    lag_fr, offset, lag_p = summarize_lags([event, {**event, "route1_A_eligible": False}])
+    assert (lag_fr["n_event"], lag_fr["median"], offset["median"], lag_p["n_event"]) == (1, 2, 0, 2)
+    altered = {**event, "t_w_R": 7, "Lag_FR": 3, "Offset_FR": 1, "F_R_subtype": "post"}
+    assert "F_R 判定或首个降水候" in review_events([altered], rows, params)[0]["issues"]
+    incomplete = [row for row in rows if row["t_abs"] != 7]
+    assert "F_R 判定或首个降水候" in review_events(master, incomplete, params)[0]["issues"]
     assert [row["recovery_event"] for row in recovery_risk(master, rows, params)] == [False, True]
 
 
@@ -103,6 +112,33 @@ def test_event_period_and_empty_summary(params):
     assert all(row["n_known"] == 0 and row["proportion"] is None for row in q2)
 
 
+def test_q1_trend_threshold_and_holm(params):
+    """检查连续年序列的自相关触发、并列零方差和有效年门槛。"""
+    annual = [dict(year=year, RT=2 * (year - 2003), delta_SMP=5.0, RR=None)
+              for year in range(2003, 2024)]
+    rt, delta, rr = trend_estimates(reversed(annual), params)
+    assert rt["status"] == "passed"
+    assert rt["sen_slope"] == 2
+    assert rt["primary_test"] == "hamed_rao"
+    assert rt["variance_factor"] == 1
+    assert rt["p_mk"] == pytest.approx(rt["p_hamed_rao"])
+    assert rt["primary_p_holm"] == pytest.approx(3 * rt["primary_p"])
+    assert delta["primary_test"] == "mann_kendall"
+    assert delta["sen_slope"] == 0 and delta["primary_p_holm"] == 1
+    assert rr["status"] == "insufficient_years" and rr["primary_p_holm"] is None
+    gap = trend_estimates(annual[:9] + annual[10:], params)[0]
+    assert gap["status"] == "annual_gaps" and gap["sen_slope"] == 2
+    assert gap["p_mk"] is not None and gap["primary_p"] is None
+    step = [{**row, "RT": row["RT"] + (row["year"] >= 2018)} for row in annual]
+    rt = trend_estimates(step, params)[0]
+    assert rt["sen_slope"] == 2
+    assert rt["variance_factor"] == pytest.approx(89731 / 23275)
+    assert rt["p_hamed_rao"] > rt["p_mk"]
+    short = annual[:17]
+    assert trend_estimates(short, params, minimum_years=15)[0]["status"] == "passed"
+    assert trend_estimates(short, params, minimum_years=20)[0]["status"] == "insufficient_years"
+
+
 def test_review_flags_inconsistent_censoring(params):
     """识别误标为条件 A 的右删失事件。"""
     rows = synthetic_series()
@@ -113,3 +149,51 @@ def test_review_flags_inconsistent_censoring(params):
     master[0]["route1_A_eligible"] = True
     reviewed = review_events(master, rows, params)
     assert not reviewed[0]["passed"]
+
+
+def test_recovery_cloglog_time_baseline(params):
+    """用已知风险拟合分组二项模型并检查无支撑时的输出。"""
+    import numpy as np
+
+    design = natural_spline(range(1, 13), 12)
+    sizes = np.full(12, 100.0)
+    fit, status = fit_grouped_cloglog(design, sizes, sizes * 0.2)
+    assert status == "point_estimate"
+    assert -np.expm1(-np.exp(design @ fit)) == pytest.approx([0.2] * 12)
+    fit, status = fit_grouped_cloglog(design, sizes, np.arange(10, 34, 2))
+    assert status == "point_estimate"
+    hazards = -np.expm1(-np.exp(design @ fit))
+    assert 0 < hazards[0] < hazards[-1] < 1
+    output, support = recovery_time_baseline([], [], {}, 12, 3, params["infer"])
+    assert support["status"] == "insufficient_support"
+    assert len(output) == 12 and all(row["hazard"] is None for row in output)
+
+
+def test_route2_cif_preserves_competing_risk_and_strict_reclassification(params):
+    """用已知风险集手算累计发生率，检验 post 重分型及删失。"""
+    a = dict(followup_pentad=1, at_risk=True, censored=False, exit_A=True, exit_B=False)
+    b = dict(followup_pentad=2, at_risk=True, censored=False, exit_A=False, exit_B=True, F_R_subtype="post")
+    person = [a, {**a, "exit_A": False}, {**a, "exit_A": False},
+              b, {**b, "at_risk": False, "censored": True, "exit_B": False}]
+    final = cumulative_incidence(person, 2)[-1]
+    assert (final["cif_a"], final["cif_b"], final["probability_c"]) == pytest.approx((1/3, 2/3, 0))
+    strict = cumulative_incidence(person, 2, strict=True)[-1]
+    assert (strict["cif_a"], strict["cif_b"], strict["n_censored"]) == (1, 0, 1)
+    events = [dict(episode_id="e", grid_id="g")]
+    exits = [dict(episode_id="e", exit_type="B", censor_reason=None)]
+    rows, gate = sample_audit(events, exits, {"g": "b"}, params["route2"])
+    assert rows[1]["n_event"] == 1
+    assert gate["max_b_share_per_block"] == 1 and not gate["b_share_gate_met"]
+    assert not gate["multivariable_count_gate_met"]
+
+
+def test_route2_logistic_time_baseline():
+    """以固定风险的充分统计量验证两套 logistic 拟合和概率递推。"""
+    curve = [dict(followup_pentad=t, n_at_risk=100, n_exit_a=10, n_exit_b=20) for t in range(1, 7)]
+    rows, details = fit_cause_specific(curve, 6, 3, 10)
+    assert details["status"] == "point_estimate"
+    assert rows[0]["hazard_a"] == pytest.approx(0.1)
+    assert rows[0]["hazard_b"] == pytest.approx(0.2)
+    assert rows[-1]["probability_c"] == pytest.approx(0.7 ** 6)
+    assert sum(rows[-1][key] for key in ("cif_a", "cif_b", "probability_c")) == pytest.approx(1)
+    assert fit_cause_specific(curve, 6, 3, 20)[1]["status"] == "model_unavailable"

@@ -82,7 +82,7 @@ def native_axes(dataset):
     return time_name, list(dates), *coords
 
 
-def read_field(dataset, name, time_name, selection):
+def read_field(dataset, name, time_name, selection, latitude=slice(None), longitude=slice(None)):
     """按时间、纬度、经度顺序解码变量，缺测保留为 NaN。"""
     import numpy as np
 
@@ -90,7 +90,8 @@ def read_field(dataset, name, time_name, selection):
     dimensions = (time_name, "latitude", "longitude")
     if len(variable.dimensions) != 3 or set(variable.dimensions) != set(dimensions):
         raise ValueError(f"{name} 有未经支持的维度：{variable.dimensions}")
-    index = tuple(selection if axis == time_name else slice(None) for axis in variable.dimensions)
+    selections = dict(zip(dimensions, (selection, latitude, longitude)))
+    index = tuple(selections[axis] for axis in variable.dimensions)
     values = np.ma.asarray(variable[index], dtype=np.float64).filled(np.nan)
     if np.isinf(values).any():
         raise ValueError(f"{name} 有无穷值。")
@@ -147,34 +148,70 @@ def inspect_file(path, fields, start, stop, params, bbox, reference):
                 bounds = (-tolerance, np.inf) if name in {"tp", "sro", "ssro"} else (-np.inf, np.inf)
             if unit not in allowed:
                 raise ValueError(f"{name} 单位未获支持：{unit}")
-            values = read_field(dataset, name, time_name, slice(0, required))
-            values = values[:, iy][:, :, ix]
-            valid = values[np.isfinite(values)]
-            if not valid.size:
-                raise ValueError(f"{name} 审计窗口全缺测。")
-            if valid.min() < bounds[0] or valid.max() > bounds[1]:
-                raise ValueError(f"{name} 超出原生物理范围。")
+            minimum, maximum = np.inf, -np.inf
             has_step_increase = False
-            if name in {"tp", "sro", "ssro"} and required > 1:
-                daily = values.reshape(-1, 24, *values.shape[1:])
-                increments = np.diff(daily[:, 1:], axis=1)
-                endpoint = daily[1:, 0] - daily[:-1, -1]
-                if np.any(increments < -tolerance) or np.any(endpoint < -tolerance):
-                    raise ValueError(f"{name} 在同一预报日内回落，累计语义待查。")
-                has_step_increase = bool(np.any(increments > tolerance) or np.any(endpoint > tolerance))
+            first_value = last_value = None
+            cumulative = name in {"tp", "sro", "ssro"}
+            bytes_per_day = 24 * len(lat) * len(lon) * np.dtype(np.float64).itemsize
+            hours_per_batch = 24 * max(1, (96 * 2**20) // bytes_per_day)
+            for offset in range(0, required, hours_per_batch):
+                values = read_field(dataset, name, time_name,
+                                    slice(offset, min(required, offset + hours_per_batch)))
+                values = values[:, iy[0]:iy[-1] + 1, ix[0]:ix[-1] + 1]
+                valid = values[np.isfinite(values)]
+                if valid.size:
+                    minimum = min(minimum, valid.min())
+                    maximum = max(maximum, valid.max())
+                if first_value is None:
+                    first_value = values[0].copy()
+                if cumulative and required > 1:
+                    daily = values.reshape(-1, 24, *values.shape[1:])
+                    increments = np.diff(daily[:, 1:], axis=1)
+                    endpoint = daily[1:, 0] - daily[:-1, -1]
+                    boundary = values[0] - last_value if last_value is not None else endpoint[:0]
+                    checks = (increments, endpoint, boundary)
+                    if any(np.any(check < -tolerance) for check in checks):
+                        raise ValueError(f"{name} 在同一预报日内回落，累计语义待查。")
+                    has_step_increase |= any(np.any(check > tolerance) for check in checks)
+                last_value = values[-1].copy()
+            if minimum == np.inf:
+                raise ValueError(f"{name} 审计窗口全缺测。")
+            if minimum < bounds[0] or maximum > bounds[1]:
+                raise ValueError(f"{name} 超出原生物理范围。")
             native[name] = {"unit": unit, "scale_factor": str(getattr(var, "scale_factor", 1)),
                             "add_offset": str(getattr(var, "add_offset", 0)),
                             "fill_value": str(getattr(var, "_FillValue", getattr(var, "missing_value", ""))),
-                            "step_increase": has_step_increase, "negative": bool(valid.min() < -tolerance)}
-            if name in {"tp", "sro", "ssro"}:
+                            "step_increase": has_step_increase, "negative": bool(minimum < -tolerance)}
+            if cumulative:
                 order = np.ix_(np.argsort(lat[iy]), np.argsort(lon[ix]))
-                native[name]["first"] = values[0][order]
-                native[name]["last"] = values[-1][order]
+                native[name]["first"] = first_value[order]
+                native[name]["last"] = last_value[order]
         extent = [float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max())]
         return native, (lat, lon), extent, (dates[0], dates[required - 1])
 
 
-def audit_era5land(root, params, bbox, evidence, progress):
+def audit_file(task):
+    """在独立进程内计算文件哈希和原生 QC，保留失败前已取得的证据。"""
+    path, fields, start, stop, params, bbox, raw_root = task
+    size = checksum = inspected = error = None
+    try:
+        if not path.is_file():
+            raise FileNotFoundError("原始文件缺失。")
+        if not path.resolve().is_relative_to(raw_root):
+            raise ValueError("原始文件路径越过登记根目录。")
+        before = path.stat()
+        size = before.st_size
+        checksum = digest(path)
+        inspected = inspect_file(path, fields, start, stop, params, bbox, None)
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError("文件在验收期间发生变化。")
+    except (OSError, ValueError, KeyError, RuntimeError) as failure:
+        error = failure
+    return size, checksum, inspected, error
+
+
+def audit_era5land(root, params, bbox, evidence, progress, runtime=None):
     """逐月审计现有 NetCDF。只有原生与下载证据都齐全时放行 ERA5-Land。"""
     settings = params["native_era5land"]
     first, last = era5land_years(params)
@@ -182,12 +219,17 @@ def audit_era5land(root, params, bbox, evidence, progress):
     files, checks, maps, missing = [], [], {}, []
     reference = None
     import numpy as np
+    from workflow.runtime import ordered_tasks, resolve_runtime
 
     step_fields, negative_fields = set(), set()
     prior = {}
     tolerance = settings["water_roundoff_m"]
-    for index, (relative, group, fields, start, stop) in enumerate(entries):
-        path = root / relative
+    raw_root = (root / settings["raw_root"]).resolve()
+    tasks = ((root / relative, fields, start, stop, params, bbox, raw_root)
+             for relative, _, fields, start, stop in entries)
+    results = ordered_tasks(audit_file, tasks, runtime or resolve_runtime({"profile": "low"}),
+                            task_gib=0.5, reads_disk=True)
+    for index, ((relative, group, fields, start, stop), result) in enumerate(zip(entries, results)):
         key = "terminal" if stop - start == timedelta(hours=1) else group
         batch = evidence.get(key, {})
         if not isinstance(batch, dict):
@@ -199,16 +241,17 @@ def audit_era5land(root, params, bbox, evidence, progress):
         check = {"source_id": row["file_id"], "product_code": PRODUCT}
         failure_status = "failed"
         try:
-            if not path.is_file():
-                raise FileNotFoundError("原始文件缺失。")
-            if not path.resolve().is_relative_to((root / settings["raw_root"]).resolve()):
-                raise ValueError("原始文件路径越过登记根目录。")
-            info = path.stat()
-            initial_mtime = info.st_mtime_ns
-            row["file_size_bytes"] = info.st_size
-            row["sha256"] = digest(path)
-            check["file_sha256"] = row["sha256"]
-            native, coords, extent, dates = inspect_file(path, fields, start, stop, params, bbox, reference)
+            size, checksum, inspected, error = result
+            if size is not None:
+                row["file_size_bytes"] = size
+            if checksum is not None:
+                row["sha256"] = check["file_sha256"] = checksum
+            if error is not None:
+                raise error
+            native, coords, extent, dates = inspected
+            if reference is not None and not all(np.array_equal(np.sort(a), np.sort(b))
+                                                 for a, b in zip(reference, coords)):
+                raise ValueError("原生批次网格不一致。")
             if reference is None:
                 reference = coords
             for name in ("tp", "sro", "ssro"):
@@ -233,8 +276,6 @@ def audit_era5land(root, params, bbox, evidence, progress):
             for name in ("collection_version", "download_date", "request_id", "source_url",
                          "license", "access_status"):
                 row[name] = batch.get(name, "")
-            if path.stat().st_size != row["file_size_bytes"] or path.stat().st_mtime_ns != initial_mtime:
-                raise ValueError("文件在验收期间发生变化。")
             check["collection"] = row["collection_version"]
             failure_status = "pending"
             if (row["access_status"] != "allowed" or not all(row[n] for n in ("collection_version", "download_date", "license", "access_status"))

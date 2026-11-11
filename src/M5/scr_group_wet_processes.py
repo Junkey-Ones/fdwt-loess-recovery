@@ -7,8 +7,8 @@ from collections import defaultdict
 from src.M5.scr_derive_outcomes import index_series, precip_qualifies
 
 
-def group_wet_processes(events, branches, rows, grids, params):
-    """给连续湿候分配过程标识，连接共享区域事件的空间块。"""
+def assign_wet_processes(events, branches, rows, params):
+    """按完整格点时间轴登记湿过程，并将过程键连接到事件。"""
     index = index_series(rows)
     minimum = params["fr"]["min_p_mm"]
     membership, at_time = [], {}
@@ -32,6 +32,11 @@ def group_wet_processes(events, branches, rows, grids, params):
         branch["wet_process_id"] = process
         if branch["branch"] == "F_R":
             event["wet_process_id"] = process
+    return membership
+
+
+def build_superblocks(events, grids):
+    """汇合所有格点后连接共享区域事件或湿过程的空间块。"""
     blocks = {row["grid_id"]: row["block_id"] for row in grids}
     parent = {block: block for block in blocks.values() if block is not None}
 
@@ -54,5 +59,10 @@ def group_wet_processes(events, branches, rows, grids, params):
         for block in rest:
             a, b = find(first), find(block)
             parent[max(a,b)] = min(a,b)
-    superblocks = [dict(block_id=block, superblock_id=find(block)) for block in sorted(parent)]
-    return membership, superblocks
+    return [dict(block_id=block, superblock_id=find(block)) for block in sorted(parent)]
+
+
+def group_wet_processes(events, branches, rows, grids, params):
+    """给连续湿候分配过程标识，连接共享区域事件的空间块。"""
+    membership = assign_wet_processes(events, branches, rows, params)
+    return membership, build_superblocks(events, grids)

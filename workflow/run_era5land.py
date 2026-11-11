@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
+from time import monotonic
 from uuid import uuid4
 
 from .freeze_m0 import atomic_write, index_lock, json_bytes
@@ -116,10 +117,11 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
     def file_record(path):
         return {"path": path.relative_to(root).as_posix(), "sha256": digest(path)}
 
-    def publish(module, receipt):
+    def publish(module, receipt, started):
         now = datetime.now(timezone.utc)
         event = {"time": now.isoformat(), "level": "INFO", "message": f"{module} 已生成审计回执",
-                 "stdout": receipt, "stderr": []}
+                 "stdout": receipt, "stderr": [], "runtime": plan.get("runtime"),
+                 "elapsed_seconds": monotonic() - started}
         stamp = now.strftime("%Y-%m-%dT%H-%M-%S")
         atomic_write(logs / module / f"{module}_{stamp}_{uuid4().hex}.jsonl",
                      (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
@@ -144,7 +146,9 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
         if m1 is not None and m1["evidence_sha256"] != evidence_hash:
             raise ValueError("来源登记已变化，请使用新别名重新验收。")
         if m1 is None:
-            files, checks, mappings, missing = audit_era5land(root, params, bbox, evidence, progress)
+            started = monotonic()
+            files, checks, mappings, missing = audit_era5land(root, params, bbox, evidence, progress,
+                                                            plan.get("runtime"))
             status = "passed" if not missing else (
                 "failed" if any(row["audit_status"] == "failed" for row in files) else "exited")
             coverage = []
@@ -180,7 +184,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
             m1 = {**base, "module_id": "M1", "status": status, "evidence_sha256": evidence_hash,
                   "input_files": [{"path": row["file_path"], "sha256": row["sha256"]}
                                   for row in files if "sha256" in row], "output_files": output_files}
-            publish("M1", m1)
+            publish("M1", m1, started)
 
         result = {**plan, "run_id": record["run_id"], "module_status": {"M1": m1["status"]},
                   "m1_reports": str(output / "reports")}
@@ -192,6 +196,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                 if digest(root / item["path"]) != item["sha256"]:
                     raise ValueError(f"M1 原始文件哈希已变化：{item['path']}")
 
+        started = monotonic()
         verify_raw()
         m2 = read_receipt("M2")
         destination = (root / params["output"]["interim"] / "era5land_base" / plan["run_alias"]).resolve()
@@ -205,7 +210,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                     with TemporaryDirectory(dir=destination.parent, prefix=".m2-") as temporary:
                         stage = Path(temporary) / "stage"
                         stage.mkdir()
-                        prepare_era5land(root, stage, params, bbox, schema, progress)
+                        prepare_era5land(root, stage, params, bbox, schema, progress, plan.get("runtime"))
                         verify_raw()
                         atomic_write(stage / "run.json", json_bytes({**identity, "module": "M2",
                                                                     "status": "passed", "upstream": m1_link,
@@ -225,6 +230,6 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                 raise ValueError("已有 M2 目录与登记产物不匹配。")
             m2 = {**base, "module_id": "M2", "status": "passed", "input_files": [m1_link],
                   "output_files": [file_record(path) for path in sorted(destination.iterdir())]}
-            publish("M2", m2)
+            publish("M2", m2, started)
         result["module_status"]["M2"] = m2["status"]
         return {**result, "m2_interim": str(destination)}
