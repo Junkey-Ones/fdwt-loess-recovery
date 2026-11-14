@@ -108,6 +108,29 @@ def test_progress_interruption_and_failure():
         assert snapshot["modules"] == {"M1": state} and snapshot["overall"] is None
 
 
+def test_m6_progress_reports_current_work_without_advancing_count():
+    """同一计数下的阶段明细更新也会重置上报计时。"""
+    from workflow.progress import ProgressEvent, RunProgress
+
+    now = [0]
+    meter = RunProgress(clock=lambda: now[0])
+    meter.event(ProgressEvent("M6", "汇总 NASADEM", "读取瓦片", 8, 32, "瓦片格点"))
+    now[0] = 40
+    output = StringIO()
+    panel = terminal_panel.TerminalPanel(output, interactive=False)
+    panel.draw_run("测试", meter.snapshot(), "", "1")
+    assert "距上次上报 40 秒" in output.getvalue()
+    assert "主进程 CPU" in output.getvalue()
+    assert "8/32 瓦片格点" in output.getvalue()
+
+    meter.event(ProgressEvent("M6", "汇总 NASADEM", "计算坡度与高程", 8, 32, "瓦片格点"))
+    now[0] = 45
+    snapshot = meter.snapshot()
+    assert snapshot["stale"] == 5
+    assert snapshot["stage_elapsed"] == 45
+    assert snapshot["fraction"] == 0.25
+
+
 def test_wizard_back_help_and_direct_edit(monkeypatch, capsys):
     """返回上一步、查看帮助和在确认页编辑时保留答案。"""
     from workflow.run_module import wizard

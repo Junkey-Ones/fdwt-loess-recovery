@@ -28,10 +28,14 @@ def natural_spline(times, horizon):
 
 def fit_grouped_cloglog(design, sizes, counts):
     """用分组二项对数似然和 Fisher scoring 拟合，报告可辨识性。"""
+    total = counts.sum()
+    trials = sizes.sum()
+    if total <= 0 or total >= trials:
+        return None, "no_outcome_variation"
     if np.linalg.matrix_rank(design) < design.shape[1]:
         return None, "rank_deficient"
     beta = np.zeros(design.shape[1])
-    beta[0] = np.log(-np.log1p(-counts.sum() / sizes.sum()))
+    beta[0] = np.log(-np.log1p(-total / trials))
 
     def evaluate(coefficients):
         eta = design @ coefficients

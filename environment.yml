@@ -11,3 +11,7 @@ dependencies:
   - netcdf4=1.7.2
   - pyarrow=19.0.1
   - matplotlib=3.10.7
+  - pyhdf
+  - rasterio
+  - shapely>=2
+  - pyproj

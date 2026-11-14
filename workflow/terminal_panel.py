@@ -158,7 +158,10 @@ class TerminalPanel:
             if snapshot["eta"] is not None and event.done < (event.total or 0):
                 task += f" · 预计剩余 {duration(snapshot['eta'])}"
         if snapshot["stale"] >= 30 and not terminal and event.state == "running":
-            task = " · ".join(filter(None, (task, f"{duration(snapshot['stale'])} 未收到进度更新")))
+            silence = f"距上次上报 {duration(snapshot['stale'])}"
+            if event.module == "M6":
+                silence += f" · 此间主进程 CPU {snapshot['quiet_cpu']:.1f} 秒"
+            task = " · ".join(filter(None, (task, silence)))
         final = LABELS.get(terminal, "")
         lines = (final, stage, event.detail, progress, task, elapsed, eta)
         if self.live is None:

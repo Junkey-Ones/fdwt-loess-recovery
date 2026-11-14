@@ -4,7 +4,7 @@
 """
 from collections import Counter, defaultdict
 from itertools import combinations
-from math import erfc, sqrt
+from math import erfc, isfinite, sqrt
 from statistics import NormalDist, mean, median, quantiles
 
 from src.M5.scr_derive_outcomes import index_series, sen_slope
@@ -23,7 +23,7 @@ def recovery_risk(events, rows, params, *, horizon=None):
         for step in range(1, horizon+1):
             t = start + step
             row = lookup.get(t, {})
-            if row.get("smp") is None:
+            if (smp := row.get("smp")) is None or not isfinite(smp):
                 if step > 1:
                     reason = "data_end" if t > max(lookup) else "missing"
                     risk[-1].update(censor_missing=reason=="missing", censor_data_end=reason=="data_end",
@@ -47,6 +47,23 @@ def recovery_risk(events, rows, params, *, horizon=None):
     return risk
 
 
+def restore_fr_eligibility(events, rows):
+    """从冻结候表补齐旧版 M5 缺少的路线一降水资格。"""
+    older = [event for event in events if event.get("route1_FR_eligible") is None]
+    if not older:
+        return
+    index = index_series(rows)
+    for event in older:
+        eligible = event["route1_A_eligible"]
+        if eligible and event.get("F_R") is True:
+            series = index[event["product"], event["grid_id"], event["support_id"]]
+            first = series.get(event["t_w_R"])
+            if first is None or first.get("active_flag") is None:
+                raise ValueError(f"旧版 M5 事件缺少首个接续候的活跃窗记录：{event['episode_id']}")
+            eligible = first["active_flag"]
+        event["route1_FR_eligible"] = eligible
+
+
 def summarize(events, params):
     """按年计算条件 A 恢复中位数、已知接续比例及未知数。"""
     groups = defaultdict(list)
@@ -65,10 +82,12 @@ def summarize(events, params):
             q25, _, q75 = quantiles([row["RT"] for row in rows], method="inclusive")
             q1[-1].update(RT_q25=q25, RT_q75=q75, delta_SMP_mean=mean(row["delta_SMP"] for row in rows),
                           RR_mean=mean(row["RR"] for row in rows))
-        known = [row for row in rows if row["F_R"] is not None]
+        eligible = [row for row in rows if row["route1_FR_eligible"]]
+        known = [row for row in eligible if row["F_R"] is not None]
         positive = sum(row["F_R"] is True for row in known)
         q2.append(dict(year=year, n_recovered=len(rows), n_known=len(known), n_positive=positive,
-                       n_unknown=len(rows)-len(known), proportion=positive/len(known) if known else None))
+                       n_unknown=len(eligible)-len(known), n_outside_active_window=len(rows)-len(eligible),
+                       proportion=positive/len(known) if known else None))
     return q1, q2
 
 
@@ -77,7 +96,8 @@ def summarize_lags(events):
     result = []
     for metric, flag, condition_a in (("Lag_FR", "F_R", True), ("Offset_FR", "F_R", True),
                                       ("Lag_P", "P_term", False)):
-        sample = [row for row in events if (not condition_a or row["route1_A_eligible"])
+        sample = [row for row in events if (not condition_a or (
+                  row["route1_A_eligible"] and row["route1_FR_eligible"]))
                   and row.get(flag) is True]
         values = [row.get(metric) for row in sample]
         if None in values:
@@ -86,6 +106,36 @@ def summarize_lags(events):
         q25, _, q75 = quantiles(values, method="inclusive") if len(values) > 1 else (middle,) * 3
         result.append(dict(metric=metric, domain="condition_A" if condition_a else "all_positive",
                            n_event=len(values), median=middle, q25=q25, q75=q75))
+    return result
+
+
+def audit_model_samples(events, exposures, risk):
+    """按结局和完整案例口径核对 Q2／Q3 候选样本及 LAI 暴露簇。"""
+    by_episode = {row["episode_id"]: row for row in exposures}
+    if len(by_episode) != len(exposures) or set(by_episode) != {event["episode_id"] for event in events}:
+        raise ValueError("M6 主暴露须与 M5 事件逐一对应。")
+    entered = {row["episode_id"] for row in risk if row["at_risk"]}
+    recovered = {row["episode_id"] for row in risk if row["at_risk"] and row["recovery_event"]}
+    fr = {row["episode_id"]: row["F_R"] for row in events
+          if row["route1_FR_eligible"] and row["F_R"] is not None}
+    contrast = {row["episode_id"]: row["F_R"] for row in events if row["episode_id"] in fr
+                and (not row["F_R"] or row["F_R_subtype"] in ("pre", "sync"))}
+
+    def counts(outcomes, model=None):
+        included = {episode: value for episode, value in outcomes.items()
+                    if model is None or by_episode[episode][f"exposure_complete_{model}"]}
+        clusters = Counter(by_episode[episode]["LAI_exposure_cluster"] for episode in included
+                           if model in ("L", "I"))
+        return dict(n_before=len(outcomes), n_event=len(included),
+                    n_outcome=sum(included.values()), n_nonoutcome=len(included)-sum(included.values()),
+                    n_exposure=len(clusters) if model in ("L", "I") else None,
+                    max_cluster_size=max(clusters.values(), default=0) if model in ("L", "I") else None)
+
+    result = {"q2_fr": counts(fr), "q2_pre_sync": counts(contrast)}
+    recovery = {episode: episode in recovered for episode in entered}
+    for outcome, sample in (("recovery", recovery), ("fr", fr)):
+        for model in ("L", "D", "I"):
+            result[f"q3_{outcome}_{model}"] = counts(sample, model)
     return result
 
 
@@ -145,7 +195,7 @@ def trend_estimates(annual, params, *, minimum_years=None):
         variance = (n * (n - 1) * (2 * n + 5) - tie_term) / 18
         row.update(sen_slope=slope, p_mk=mk_p_value(score, variance))
         if years[-1] - years[0] + 1 != n:
-            row["status"] = "annual_gaps"
+            row.update(status="annual_gaps", primary_test="mann_kendall", primary_p=row["p_mk"])
             continue
         lag_one = centered_autocorrelations(values)[0]
         q = n * (n + 2) * lag_one ** 2 / (n - 1)

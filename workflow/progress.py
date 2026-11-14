@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from statistics import median
 from threading import Lock
-from time import monotonic
+from time import monotonic, process_time
 from uuid import uuid4
 
 
@@ -55,6 +55,8 @@ class RunProgress:
         self.clock = clock
         self.lock = Lock()
         self.started = self.stage_started = self.updated = clock()
+        self.reported = self.started
+        self.reported_cpu = process_time()
         self.current = ProgressEvent("", "核对运行计划")
         self.modules = {}
         self.history = {}
@@ -181,6 +183,9 @@ class RunProgress:
             if event.done > (0 if changed else old.done):
                 self.samples.append((now, event.done))
                 self.updated = now
+            if event != old:
+                self.reported = now
+                self.reported_cpu = process_time()
             while self.samples and self.samples[0][0] < now - 30:
                 self.samples.popleft()
             self.current = event
@@ -207,12 +212,12 @@ class RunProgress:
         with self.lock:
             now = self.finished_at if self.terminal else self.clock()
             event = self.current
-            stale = now - self.updated
+            stale = now - self.reported
             samples = [(t, n) for t, n in self.samples if t >= now - 30]
             speed = eta = None
             if len(samples) >= 3 and event.unit and event.state == "running":
                 span = samples[-1][0] - samples[0][0]
-                if span > 0 and stale < 30:
+                if span > 0 and now - self.updated < 30:
                     speed = (samples[-1][1] - samples[0][1]) / span
                     if event.total is not None:
                         eta = max(0, event.total - event.done) / speed
@@ -246,6 +251,7 @@ class RunProgress:
             elif self.terminal:
                 overall = total_eta = eta = speed = None
             return dict(event=event, elapsed=elapsed, stage_elapsed=now - self.stage_started, stale=stale,
+                        quiet_cpu=process_time() - self.reported_cpu,
                         speed=speed, eta=eta, fraction=fraction, overall=overall, total_eta=total_eta,
                         modules=dict(self.modules), terminal=self.terminal)
 

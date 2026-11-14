@@ -3,3 +3,5 @@ dev_m0_rectangle,2026-11-10,SOP §14.6 外包矩形仅用于下载且正式掩�
 dev_period_2003,2026-11-10,v1.3.1 事件库和气候态 2000–2023,事件库和气候态基准期采用 2003–2023,项目负责人在本次聊天确认,unknown,M0–M10,项目负责人（本次聊天确认）,重新冻结并从 M1 运行,classification_pending,,approved
 dev_m0_rectangle_v2,2026-11-10,dev_m0_rectangle 采用 103–114°E 和 34–41°N,采用 102–115°E 和 34–41°N 完整矩形,项目负责人在本次聊天更新经度范围,unknown,M0–M10,项目负责人（本次聊天确认）,重新冻结并按新边界重新执行空间相关模块,classification_pending,,approved
 dev_q3_covariate_period_2003,2026-11-10,Q3 背景气候协变量采用 2000–2023,年均降水和4–9月均温改用 2003–2023,项目负责人确认与主数据时期一致,no,M2与M6–M10,项目负责人（本次聊天确认）,重新冻结并重算协变量和受影响模型,pre_outcome_deviation,,approved
+dev_q1_annual_gaps,2026-11-13,预注册 §7.1 年趋势至少18个有效年，未规定内部缺年的自相关诊断,内部缺年时保留实际年份的 Sen 斜率，普通 Mann–Kendall 纳入 Holm；等间隔自相关诊断留空,避免将跨年缺口压缩为一年并保留达到有效年门槛的检验,unknown,M7,,M7 趋势及依赖产物,classification_pending,,pending
+dev_q2_q3_inference_details,2026-11-13,预注册 §7 未细化簇内相关估计及双侧 p 的计算,用空间超级块和 LAI 簇大小的 Kish 有效计数下界；双侧 p 取两种标准误的较大正态 p；bootstrap 成功率下限 0.80,补全主模型可执行推断口径,unknown,M7,,Q2／Q3 模型与边际推断,classification_pending,,pending

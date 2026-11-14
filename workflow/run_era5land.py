@@ -32,7 +32,7 @@ def csv_bytes(columns, rows):
     return buffer.getvalue().encode("utf-8")
 
 
-def frozen_context(root, plan, config_path, params, digest):
+def frozen_context(root, plan, config_path, params, digest, *, historical=False):
     """核验同别名 M0 回执、冻结输入、工作树和运行身份。"""
     alias = plan["run_alias"]
     output, logs = ((root / params["output"][key] / alias).resolve() for key in ("outputs", "logs"))
@@ -58,12 +58,19 @@ def frozen_context(root, plan, config_path, params, digest):
     if config_key not in record["input_sha256"]:
         raise ValueError("所选配置没有登记于 M0 冻结。")
     for path, expected in record["input_sha256"].items():
-        if digest(root / path) != expected:
+        actual = sha256(record["input_snapshot"][path].encode("utf-8")).hexdigest() if historical else digest(root / path)
+        if actual != expected:
             raise ValueError(f"冻结输入已变化，请使用新别名：{path}")
-    files = {path.relative_to(root).as_posix(): digest(path) for directory in ("src", "workflow")
-             for path in (root / directory).rglob("*.py")}
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    if files != record["code_files"] or commit != record["git_commit"]:
+    if historical:
+        files = {path: sha256(source.encode("utf-8")).hexdigest()
+                 for path, source in record["code_snapshot"].items()}
+        commit = record["git_commit"]
+    else:
+        files = {path.relative_to(root).as_posix(): digest(path) for directory in ("src", "workflow")
+                 for path in (root / directory).rglob("*.py")}
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    if (files != record["code_files"] or commit != record["git_commit"]
+            or sha256(json_bytes({"files": files, "git_commit": commit})).hexdigest() != record["code_hash"]):
         raise ValueError("代码身份已变化，请使用新别名重新冻结。")
     with (root / "metadata/study_area_manifest.csv").open(encoding="utf-8-sig", newline="") as source:
         accepted = [row for row in csv.DictReader(source) if row["acceptance_status"] == "accepted"]

@@ -353,6 +353,7 @@ tables:
     - F_R
     - F_R_status
     - F_R_subtype
+    - route1_FR_eligible
     - t_w_R
     - Lag_FR
     - Offset_FR
@@ -488,6 +489,9 @@ tables:
     - phenology_mode
     - mask_version
     - qc_version
+  grid_static_covariates:
+    columns: [grid_id, sand_0_30, clay_0_30, elevation_m, slope_deg, sand_0_30_coverage, clay_0_30_coverage, elevation_m_coverage, slope_deg_coverage, slope_method, nasadem_num_area_fractions]
+    primary_key: [grid_id]
   event_exposure:
     columns:
     - episode_id
@@ -713,7 +717,12 @@ tables:
     - formula
     - link_function
     - n_event
+    - n_before
     - n_exposure
+    - cluster_size_median
+    - cluster_size_p95
+    - cluster_size_max
+    - max_cluster_share
     - n_outcome
     - n_nonoutcome
     - n_block
@@ -722,12 +731,15 @@ tables:
     - epv
     - conservative_epv
     - convergence_status
+    - bootstrap_success
+    - bootstrap_requested
     - separation_flag
     - support_gate
     - inference_level
     - model_object_path
     - random_seed_id
     - code_hash
+    primary_key: [analysis_id]
   model_result:
     columns:
     - analysis_id
@@ -740,6 +752,7 @@ tables:
     - ci_method
     - p_raw
     - test_family
+    - test_id
     - p_holm
     - effect_unit
     - reference_level
@@ -762,8 +775,14 @@ tables:
     - marginal_effect
     - ci_low
     - ci_high
+    - difference_ci_low
+    - difference_ci_high
     - ci_method
     - scale
+    primary_key: [analysis_id, term, deep_reference, LAI_reference]
+  route1_model_uncertainty:
+    columns: [analysis_id, term, quantity, ci_method, ci_low, ci_high]
+    primary_key: [analysis_id, term, quantity, ci_method]
   deviation_log:
     columns:
     - deviation_id
@@ -789,11 +808,17 @@ tables:
     columns: [version, H, followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status]
     primary_key: [version, followup_pentad]
   q2_annual:
-    columns: [year, n_recovered, n_known, n_positive, n_unknown, proportion]
+    columns: [year, n_recovered, n_known, n_positive, n_unknown, n_outside_active_window, proportion]
     primary_key: [year]
   q2_lag_result:
-    columns: [metric, domain, n_event, median, q25, q75]
+    columns: [metric, domain, n_event, median, q25, q75, n_superblock, ci_low, ci_high]
     primary_key: [metric]
+  q2_fr_grid_year:
+    columns: [grid_id, year, block_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion]
+    primary_key: [grid_id, year]
+  q2_fr_spatial:
+    columns: [domain, domain_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion, n_superblock, ci_low, ci_high]
+    primary_key: [domain, domain_id]
   cross_product_event_match:
     columns: [product_combo, grid_id, main_episode_id, alt_episode_id, delta_ts, delta_tmin]
     primary_key: [product_combo, main_episode_id]

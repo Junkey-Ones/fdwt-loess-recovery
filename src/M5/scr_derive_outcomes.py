@@ -70,6 +70,7 @@ def derive_outcomes(events, rows, params):
                                      post_te_flag=t > stop, active_flag=row.get("active_flag"), qc_status=row.get("qc_status")))
         for name in ("P_term", "F_R", "F_Z"):
             result.update({name: None, f"{name}_status": "unknown"})
+        result["route1_FR_eligible"] = False
         if end is None:
             master.append(result)
             continue
@@ -98,6 +99,8 @@ def derive_outcomes(events, rows, params):
             result[name] = flag
             result[f"{name}_status"] = "unknown" if flag is None else ("positive" if flag else "negative")
         tp, tr = first["P_term"], first["F_R"]
+        result["route1_FR_eligible"] = bool(event["route1_A_eligible"] and (
+            tr is None or lookup[tr].get("active_flag")))
         result.update(t_P95=tp, Lag_P=tp-minimum if tp is not None else None, t_w_R=tr,
                       Lag_FR=tr-minimum if tr is not None else None, Offset_FR=tr-end if tr is not None else None,
                       F_R_subtype=None if tr is None else ("pre" if tr < end else "sync" if tr == end else "post"))

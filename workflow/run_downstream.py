@@ -2,7 +2,9 @@
 作者：Codex。版本：v0.1.0。运行：python -m workflow.run_module route1。
 输入：冻结身份、上游回执和补充输入登记。输出：模块表、回执和状态。
 """
+from collections import defaultdict
 from datetime import datetime, timezone
+from itertools import groupby
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -44,7 +46,8 @@ def registered_inputs(root, path, digest):
     return datasets, [{"path": item["path"], "sha256": item["sha256"]} for item in files]
 
 
-def compute_module(module, tables, supplements, params, plan, matrix, stage=None, schema=None, progress=None):
+def compute_module(module, tables, supplements, params, plan, matrix, stage=None, schema=None, progress=None,
+                   identity=None):
     """从已核验的输入计算模块表及状态。"""
     import pyarrow.parquet as pq
     from src.M3.scr_build_climatology import build_climatology
@@ -54,9 +57,12 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
     from src.M5.scr_derive_outcomes import derive_outcomes
     from src.M5.scr_group_wet_processes import assign_wet_processes, build_superblocks
     from src.M6.scr_background_climate import background_climate
-    from src.M6.scr_link_exposures import link_exposures
-    from src.M7.scr_route1_summary import recovery_risk, summarize, summarize_lags, trend_estimates
+    from src.M6.scr_link_exposures import audit_clusters, link_exposures
+    from src.M7.scr_route1_summary import (
+        audit_model_samples, recovery_risk, restore_fr_eligibility, summarize, summarize_lags, trend_estimates,
+    )
     from src.M7.scr_fit_recovery_risk import recovery_time_baseline
+    from src.M7.scr_fit_route1_models import fit_route1_models, lag_intervals, summarize_fr_support
     from src.M8.scr_encode_exits import encode_exits
     from src.M8.scr_describe_exits import cumulative_incidence, sample_audit
     from src.M8.scr_fit_cause_specific import fit_cause_specific
@@ -77,6 +83,20 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         series = series.sort_by([(key, "ascending") for key in series_keys])
         return (row for batch in series.to_batches(max_chunksize=8192) for row in batch.to_pylist())
 
+    def event_pentads(events, columns):
+        by_grid = defaultdict(list)
+        for event in events:
+            by_grid[event["grid_id"]].append(event)
+        if not by_grid:
+            return
+        series = pq.read_table(tables["grid_pentad"], columns=[*series_keys, *columns],
+                               filters=[("grid_id", "in", sorted(by_grid))])
+        series = series.sort_by([("grid_id", "ascending"), ("t_abs", "ascending")])
+        rows = (row for batch in series.to_batches(max_chunksize=8192) for row in batch.to_pylist())
+        for grid_id, group in groupby(rows, key=lambda row: row["grid_id"]):
+            yield grid_id, by_grid.pop(grid_id), list(group)
+        if by_grid:
+            raise ValueError("部分事件找不到对应的格点候序列。")
 
     def extra(name):
         return pq.read_table(supplements[name]).to_pylist() if name in supplements else []
@@ -106,9 +126,6 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         result["event_regional"], result["event_regional_member"] = connect_regions(
             result["event_master_base"], read("grid_manifest"), params)
     elif module == "M5":
-        from collections import defaultdict
-        from itertools import groupby
-
         columns = [*series_keys, "year", "pentad", "smp", "active_flag", "qc_status",
                    "p_mm", "p95_mm", "p95_usable", "w"]
         event_groups = defaultdict(list)
@@ -128,49 +145,83 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             raise ValueError("部分事件找不到对应的完整格点候序列。")
         result["superblock_membership"] = build_superblocks(result["event_master"], read("grid_manifest"))
     elif module == "M6":
+        emit(progress, "M6", "汇总背景气候", "打开 ERA5-Land 日表")
         daily = pq.ParquetFile(tables["grid_day_era5land"])
         def climate_batches():
             done = 0
             total = daily.metadata.num_rows
+            emit(progress, "M6", "汇总背景气候", "逐批读取并汇总日表", total=total, unit="记录")
             for batch in daily.iter_batches(columns=["grid_id", "date", "p_mm", "t2m_c"]):
                 yield batch
                 done += batch.num_rows
                 emit(progress, "M6", "汇总背景气候", done=done, total=total, unit="记录")
 
         climate = background_climate(climate_batches(), params)
-        emit(progress, "M6", "连接事件前暴露")
+        emit(progress, "M6", "读取暴露连接输入", "读取静态协变量、LAI 年值及事件主表")
         static = {row["grid_id"]: row for row in extra("grid_static_covariates")}
-        static = {key: {**static.get(key, {}), **value} for key, value in climate.items()}
+        for grid_id, values in climate.items():
+            static.setdefault(grid_id, {}).update(values)
         annual = extra("vegetation_grid_year")
         events = read("event_master")
-        result["event_exposure"], result["exposure_cluster_audit"] = link_exposures(
-            events, read("grid_pentad", [*series_keys, "year", "pentad", "sm_0_100_mm", "sm_deep_mm"], events=events),
-            annual, static, params)
+        vegetation_by_grid = defaultdict(list)
+        for row in annual:
+            vegetation_by_grid[row["grid_id"]].append(row)
+        exposures, clusters = [], defaultdict(list)
+        total = len({row["grid_id"] for row in events})
+        emit(progress, "M6", "连接事件前暴露", "筛选并排序事件格点的候序列", total=total, unit="格点")
+        done = 0
+        for grid_id, group, rows in event_pentads(events, ["year", "pentad", "sm_0_100_mm", "sm_deep_mm"]):
+            if done % 16 == 0:
+                emit(progress, "M6", "连接事件前暴露", f"连接格点 {grid_id} 的植被与深层土壤水",
+                     done=done, total=total, unit="格点")
+            linked, _ = link_exposures(group, rows, vegetation_by_grid[grid_id], static, params, include_audit=False)
+            exposures.extend(linked)
+            for row in linked:
+                if row["LAI_full_window"]:
+                    clusters[grid_id, row["year"]].append(row["episode_id"])
+            done += 1
+        emit(progress, "M6", "审计暴露簇", f"核对 {len(clusters)} 个格点×年份暴露簇")
+        result["event_exposure"] = exposures
+        result["exposure_cluster_audit"] = audit_clusters(clusters, params)
         result["vegetation_grid_year"] = annual
-        if not annual or "grid_static_covariates" not in supplements:
+        details["complete_cases"] = {
+            model: sum(row[f"exposure_complete_{model}"] for row in exposures) for model in ("L", "D", "I")}
+        if not all(details["complete_cases"].values()):
             status = "descriptive_only"
             details["missing"] = [name for name in ("vegetation_grid_year", "grid_static_covariates")
                                   if name not in supplements]
     elif module == "M7":
         events = read("event_master")
-        risk_series = read("grid_pentad", [*series_keys, "smp", "active_flag"], events=events)
         blocks = {row["grid_id"]: row["block_id"] for row in read("grid_manifest")}
         settings = params["route1"]
-        risk = recovery_risk(events, risk_series, params)
+        horizons = params["sensitivity"]["followup"]
+        risk, sensitivity_risk = [], {version: [] for version in horizons}
+        for _, group, rows in event_pentads(events, ["smp", "active_flag"]):
+            restore_fr_eligibility(group, rows)
+            risk.extend(recovery_risk(group, rows, params))
+            for version, horizon in horizons.items():
+                sensitivity_risk[version].extend(recovery_risk(group, rows, params, horizon=horizon))
         result["route1_recovery_person_pentad"] = risk
+        exposures = read("event_exposure")
+        details["model_candidate_samples"] = audit_model_samples(events, exposures, risk)
+        superblocks = {row["block_id"]: row["superblock_id"] for row in read("superblock_membership")}
+        result["q2_fr_grid_year"], result["q2_fr_spatial"] = summarize_fr_support(events, blocks, superblocks, params)
+        result.update(fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity or {}))
+        details["model_status"] = {row["analysis_id"]: row["inference_level"] for row in result["model_fit_manifest"]}
         result["q1_recovery_risk"], details["q1_recovery_risk"] = recovery_time_baseline(
             risk, events, blocks, settings["recovery_risk_h"], settings["recovery_time_df"], params["infer"])
         result["q1_recovery_risk_sensitivity"] = []
         details["q1_recovery_risk_sensitivity"] = {}
-        for version, horizon in params["sensitivity"]["followup"].items():
+        for version, horizon in horizons.items():
             curve, support = recovery_time_baseline(
-                recovery_risk(events, risk_series, params, horizon=horizon), events, blocks,
+                sensitivity_risk.pop(version), events, blocks,
                 horizon, settings["recovery_time_df"], params["infer"])
             result["q1_recovery_risk_sensitivity"].extend(
                 dict(row, version=version, H=horizon) for row in curve)
             details["q1_recovery_risk_sensitivity"][version] = support
         result["q1_annual"], result["q2_annual"] = summarize(events, params)
         result["q2_lag_result"] = summarize_lags(events)
+        lag_intervals(events, result["q2_lag_result"], blocks, superblocks, params)
         result["trend_estimate"] = trend_estimates(result["q1_annual"], params)
         result["trend_estimate_sensitivity"] = [
             dict(row, min_valid_years=minimum)
@@ -179,7 +230,7 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         ]
         status = "descriptive_only"
         details["q1_trend_status"] = {row["metric"]: row["status"] for row in result["trend_estimate"]}
-        details["pending"] = ["Q1 恢复风险区间和敏感性、趋势伴随诊断", "Q2 调整对比", "Q3 模型"]
+        details["pending"] = ["Q1 恢复风险区间和敏感性、趋势伴随诊断", "Q2／Q3 扩展敏感性"]
     elif module == "M8":
         blocks = {row["grid_id"]: row["block_id"] for row in read("grid_manifest")}
         events = read("event_master")
@@ -260,8 +311,10 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             ("M4", "候选进入事件库", n_candidates, len(events)),
             ("M5", "有恢复终止", len(events), n_recovered),
             ("M7", "路线一条件 A", n_recovered, sum(row["route1_A_eligible"] for row in events)),
-            ("M7", "条件 A 降水接续可判", sum(row["route1_A_eligible"] for row in events),
-             sum(row["route1_A_eligible"] and row["F_R"] is not None for row in events)),
+            ("M7", "条件 A 降水接续活跃窗资格", sum(row["route1_A_eligible"] for row in events),
+             sum(row["route1_FR_eligible"] for row in events)),
+            ("M7", "符合活跃窗资格且降水接续可判", sum(row["route1_FR_eligible"] for row in events),
+             sum(row["route1_FR_eligible"] and row["F_R"] is not None for row in events)),
         ]
         result["sample_flow"] = [dict(analysis_id="route1", step_order=i, module=owner, step_name=step,
                                       n_before=before, n_after=after, n_excluded=before-after, unit="event",
@@ -349,12 +402,25 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
 
     if plan["product_combo"] != params["products"]["main"] or plan["variant"] not in {"main", "fixed_season"}:
         raise ValueError("当前下游编排仅接受 ERA5-Land 与已接入的主规范或固定季节。")
-    upstream = run_era5land(root, {**plan, "modules": ["M0", "M1", "M2"]},
-                            config_path, params, load_config, progress)
+    revision = None
+    if plan["resume"] and "M5" in plan["modules"]:
+        from .resume_m5 import load_m5_revision
+
+        revision = load_m5_revision(root, plan, config_path, params, load_config, digest)
+    if revision:
+        record, identity, output, logs, _ = revision["context"]
+        upstream = {"run_id": record["run_id"], "module_status": {"M1": "passed", "M2": "passed"},
+                    "m1_reports": str(output / "reports")}
+        for module in ("M0", "M1", "M2"):
+            emit(progress, module, "已核验冻结交接", state="reused")
+    else:
+        upstream = run_era5land(root, {**plan, "modules": ["M0", "M1", "M2"]},
+                                config_path, params, load_config, progress)
     statuses = upstream["module_status"]
     if statuses.get("M2") != "passed":
         return {**upstream, **plan, "run_id": upstream["run_id"], "module_status": statuses}
-    record, identity, output, logs, _ = frozen_context(root, plan, config_path, params, digest)
+    if not revision:
+        record, identity, output, logs, _ = frozen_context(root, plan, config_path, params, digest)
     schema = load_config(root / "config/schema_registry.yaml")["tables"]
     matrix = load_config(root / "config/specification_matrix.yaml")
     frozen = (root / params["output"]["frozen"]).resolve()
@@ -375,12 +441,24 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
 
     dag = load_config(root / "workflow/dag.yaml")["modules"]
     route1_reports = {"q1_recovery_risk": "q1_recovery_risk.csv",
-                      "trend_estimate": "q1_trend_result.csv", "q2_lag_result": "q2_lag_result.csv"}
+                      "trend_estimate": "q1_trend_result.csv", "q2_lag_result": "q2_lag_result.csv",
+                      **{name: f"{name}.csv" for name in ("model_fit_manifest", "model_result", "model_marginal",
+                                                        "route1_model_uncertainty", "q2_fr_spatial")}}
     with index_lock(logs / ".downstream.lock"):
         supplements, evidence = registered_inputs(root, registration, digest)
         m2_path = logs / "module_io_M2.json"
         index_outputs(json.loads(m2_path.read_bytes()))
         base_inputs = [item(m2_path), *evidence]
+        if revision:
+            revision_start = int(revision["manifest"]["starts_at"][1:])
+            revision_path = logs / f"m{revision_start}_code_revision.json"
+            revision_content = json_bytes(revision["manifest"])
+            if (revision_start == 6 and revision_path.exists()
+                    and revision_path.read_bytes() != revision_content):
+                checksum = sha256(revision_content).hexdigest()
+                revision_path = logs / f"m6_code_revision_{checksum}.json"
+            atomic_write(revision_path, revision_content)
+            identity = {**identity, "code_revision_sha256": digest(revision_path)}
         downstream = plan["modules"][3:]
         for module in downstream:
             started = monotonic()
@@ -399,7 +477,30 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                 continue
             inputs = [*base_inputs, *(item(destination / key / "module_io.json")
                                       for key in dag[module]["requires"] if key not in ("M0", "M1", "M2"))]
+            if revision:
+                if int(module[1:]) >= revision_start:
+                    inputs.append(item(revision_path))
+                elif module == "M5":
+                    inputs.append(revision["previous"])
             reused = receipt_path.exists()
+            if revision and int(module[1:]) < revision_start and not reused:
+                raise ValueError(f"缺少 {module} 冻结回执，无法接续。")
+            native = {}
+            native_supplements = supplements
+            if module == "M6":
+                from src.M6.scr_prepare_native import native_sources
+
+                missing = {"vegetation_grid_year", "grid_static_covariates"} - supplements.keys()
+                emit(progress, "M6", "盘点原生输入", "查找未由冻结交接提供的原始产品")
+                native = native_sources(root, params, missing)
+                files = [path for paths in native.values() for path in paths]
+                for done, path in enumerate(files):
+                    emit(progress, "M6", "核验前置原始数据", f"计算 {path.name} 的 SHA-256",
+                         done=done, total=len(files), unit="文件")
+                    inputs.append(item(path))
+                if files:
+                    emit(progress, "M6", "核验前置原始数据", "原始文件哈希已计算",
+                         done=len(files), total=len(files), unit="文件")
             if reused:
                 receipt = json.loads(receipt_path.read_bytes())
                 if receipt["run_id"] != record["run_id"] or receipt["input_files"] != inputs:
@@ -413,12 +514,38 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                     with TemporaryDirectory(dir=destination, prefix=".stage-") as tmp:
                         stage = Path(tmp) / module
                         stage.mkdir()
+                        if native:
+                            from src.M6.scr_prepare_native import prepare_native_inputs
+
+                            with (root / "metadata/study_area_manifest.csv").open(encoding="utf-8-sig") as stream:
+                                from csv import DictReader
+
+                                bbox, = [json.loads(row["bbox"]) for row in DictReader(stream)
+                                         if row["acceptance_status"] == "accepted"]
+                            native_supplements = dict(supplements)
+                            prepared = prepare_native_inputs(native, tables, params, bbox,
+                                lambda stage, detail, **counts: emit(progress, "M6", stage, detail, **counts),
+                                workers=plan["runtime"]["effective"]["workers"])
+                            for done, (name, rows) in enumerate(prepared.items()):
+                                emit(progress, "M6", "写入原生输入表", f"{name}.parquet · {len(rows)} 行",
+                                     done=done, total=len(prepared), unit="表")
+                                target = stage / f"{name}.parquet"
+                                write_table(target, rows, schema[name])
+                                native_supplements[name] = target
                         emit(progress, module, "执行计算")
-                        result, status, details = compute_module(module, tables, supplements, params, plan, matrix,
-                                                                 stage=stage, schema=schema, progress=progress)
+                        result, status, details = compute_module(module, tables, native_supplements, params, plan, matrix,
+                                                                 stage=stage, schema=schema, progress=progress,
+                                                                 identity=identity)
                         emit(progress, module, "写入产物")
                         for name, rows in result.items():
+                            if name in native:
+                                continue
+                            if module == "M6":
+                                emit(progress, "M6", "写入产物", f"写入 {name}.parquet")
                             definition = schema["event_master" if name == "event_master_base" else name]
+                            if name == "event_master_base":
+                                definition = {**definition, "columns": [column for column in definition["columns"]
+                                                                       if column != "route1_FR_eligible"]}
                             write_table(stage / f"{name}.parquet", rows, definition)
                         if module == "M7":
                             for name, filename in route1_reports.items():

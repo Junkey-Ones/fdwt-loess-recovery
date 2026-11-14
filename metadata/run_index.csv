@@ -1,1 +1,3 @@
 run_alias,run_id,interim_root,frozen_root,outputs_path,logs_path
+2026-11-13_主分析X,v1.3.1__6db2a88c9f44__5ffc02a06015__seed_m0_v1,data/interim,data/frozen,outputs/2026-11-13_主分析X,logs/2026-11-13_主分析X
+2026-11-13_主分析X_QC修复,v1.3.1__09b37dc7fe8a__2d1dd9555f1f__seed_m0_v1,data/interim,data/frozen,outputs/2026-11-13_主分析X_QC修复,logs/2026-11-13_主分析X_QC修复

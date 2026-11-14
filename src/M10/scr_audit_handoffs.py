@@ -26,6 +26,8 @@ def review_handoffs(tables, definitions):
             continue
         parquet = pq.ParquetFile(path)
         expected = definitions[aliases.get(name, name)]["columns"]
+        if name == "event_master_base":
+            expected = [field for field in expected if field != "route1_FR_eligible"]
         actual = parquet.schema_arrow.names
         validation[name] = dict(passed=expected == actual, expected=expected, actual=actual,
                                 n_rows=parquet.metadata.num_rows)

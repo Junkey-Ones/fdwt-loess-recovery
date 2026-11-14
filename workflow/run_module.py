@@ -423,7 +423,7 @@ def main(argv=None):
                 display_key = (key, int(snapshot["elapsed"] // 30))
             else:
                 console = status.panel.live.console
-                display_key = (key, int(snapshot["elapsed"]), event.done, status.view, console.width, console.height)
+                display_key = (key, int(snapshot["elapsed"]), event, status.view, console.width, console.height)
             with summary_lock:
                 if last_summary == display_key:
                     return

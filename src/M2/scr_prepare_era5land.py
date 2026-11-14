@@ -136,7 +136,8 @@ def monthly_values(task):
     def read(source, coords, name, start, stop):
         time_name, iy, ix = coords
         field = read_field(source, name, time_name, slice(start, stop),
-                           slice(iy.min(), iy.max() + 1), slice(ix.min(), ix.max() + 1))
+                           slice(iy.min(), iy.max() + 1), slice(ix.min(), ix.max() + 1),
+                           soil_water_zero_roundoff=settings["soil_water_zero_roundoff_m3_m3"])
         return field[:, ::-1 if iy[0] > iy[-1] else 1, ::-1 if ix[0] > ix[-1] else 1]
 
     def daily_mean(array):

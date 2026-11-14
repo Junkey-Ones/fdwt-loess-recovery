@@ -125,6 +125,8 @@ dfai:
 wet_process:
   allow_one_gap: false
 lai:
+  mask_version: main
+  qc_version: main
   scale_factor: 0.1
   window_years: 5
   window_offset: y-5...y-1
@@ -159,6 +161,7 @@ deep:
   - 200
   summary: mean
 route1:
+  deep_marginal_quantiles: [0.25, 0.50, 0.75]
   recovery_risk_t0: t_min
   recovery_risk_h: 12
   recovery_time_df: 3
@@ -199,6 +202,7 @@ trend:
 block:
   km: 100
   bootstrap_n: 500
+  bootstrap_min_success_fraction: 0.80
   two_way_cluster:
   - space
   - year
@@ -278,6 +282,7 @@ native_era5land:
   kelvin_offset: 273.15
   mm_per_m: 1000
   water_roundoff_m: 0.0000001
+  soil_water_zero_roundoff_m3_m3: 1.0e-18
   temperature_range_k: [180, 350]
   earth_radius_km: 6371.0088
 

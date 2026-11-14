@@ -88,7 +88,8 @@ def native_axes(dataset):
     return time_name, list(dates), *coords
 
 
-def read_field(dataset, name, time_name, selection, latitude=slice(None), longitude=slice(None)):
+def read_field(dataset, name, time_name, selection, latitude=slice(None), longitude=slice(None),
+               *, soil_water_zero_roundoff=0.0):
     """按时间、纬度、经度顺序解码变量，缺测保留为 NaN。"""
     import numpy as np
 
@@ -101,6 +102,9 @@ def read_field(dataset, name, time_name, selection, latitude=slice(None), longit
     values = np.ma.asarray(variable[index], dtype=np.float64).filled(np.nan)
     if np.isinf(values).any():
         raise ValueError(f"{name} 有无穷值。")
+    if name.startswith("swvl"):
+        near_zero = (values < 0) & (values >= -soil_water_zero_roundoff)
+        values[near_zero] = 0.0
     return values.transpose([variable.dimensions.index(axis) for axis in dimensions])
 
 
@@ -162,7 +166,8 @@ def inspect_file(path, fields, start, stop, params, bbox, reference):
             hours_per_batch = 24 * max(1, (96 * 2**20) // bytes_per_day)
             for offset in range(0, required, hours_per_batch):
                 values = read_field(dataset, name, time_name,
-                                    slice(offset, min(required, offset + hours_per_batch)))
+                                    slice(offset, min(required, offset + hours_per_batch)),
+                                    soil_water_zero_roundoff=settings["soil_water_zero_roundoff_m3_m3"])
                 values = values[:, iy[0]:iy[-1] + 1, ix[0]:ix[-1] + 1]
                 valid = values[np.isfinite(values)]
                 if valid.size:
