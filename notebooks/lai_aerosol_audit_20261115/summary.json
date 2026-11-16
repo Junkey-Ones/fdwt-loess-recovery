@@ -1,0 +1,321 @@
+{
+  "verification": {
+    "n_active_grid_year": 140327,
+    "max_strict_time_error": 5.551115123125783e-16,
+    "max_strict_mean_error": 6.661338147750939e-16,
+    "n_source_files": 9615
+  },
+  "annual": [
+    {
+      "version": 0,
+      "land_cover": "all",
+      "n_active_grid_year": 140327,
+      "n_pass": 1328,
+      "median_time": 0.43581465952601844
+    },
+    {
+      "version": 0,
+      "land_cover": "cropland",
+      "n_active_grid_year": 43638,
+      "n_pass": 200,
+      "median_time": 0.35117204108876593
+    },
+    {
+      "version": 0,
+      "land_cover": "forest",
+      "n_active_grid_year": 6741,
+      "n_pass": 0,
+      "median_time": 0.3188089003191537
+    },
+    {
+      "version": 0,
+      "land_cover": "grassland",
+      "n_active_grid_year": 89400,
+      "n_pass": 1127,
+      "median_time": 0.4784747808919581
+    },
+    {
+      "version": 0,
+      "land_cover": "other",
+      "n_active_grid_year": 548,
+      "n_pass": 1,
+      "median_time": 0.3299312223704157
+    },
+    {
+      "version": 1,
+      "land_cover": "all",
+      "n_active_grid_year": 140327,
+      "n_pass": 79491,
+      "median_time": 0.7220996467597951
+    },
+    {
+      "version": 1,
+      "land_cover": "cropland",
+      "n_active_grid_year": 43638,
+      "n_pass": 14198,
+      "median_time": 0.6534789654103628
+    },
+    {
+      "version": 1,
+      "land_cover": "forest",
+      "n_active_grid_year": 6741,
+      "n_pass": 506,
+      "median_time": 0.5683136475209665
+    },
+    {
+      "version": 1,
+      "land_cover": "grassland",
+      "n_active_grid_year": 89400,
+      "n_pass": 64655,
+      "median_time": 0.7613124199387349
+    },
+    {
+      "version": 1,
+      "land_cover": "other",
+      "n_active_grid_year": 548,
+      "n_pass": 132,
+      "median_time": 0.6281869489506107
+    }
+  ],
+  "candidates": [
+    {
+      "version": 0,
+      "domain": "all",
+      "n_event": 7,
+      "n_exposure": 6,
+      "n_grid": 2,
+      "n_year": 4,
+      "n_block": 1,
+      "block_kish": 1.0,
+      "exposure_kish": 5.444444444444445,
+      "n_interaction_complete": 7,
+      "latitude_median": 40.9,
+      "longitude_median": 107.3,
+      "land_cover": {
+        "cropland": 4,
+        "grassland": 3
+      },
+      "years": {
+        "2017": 3,
+        "2018": 2,
+        "2019": 1,
+        "2020": 1
+      }
+    },
+    {
+      "version": 0,
+      "domain": "recovery",
+      "n_event": 6,
+      "n_exposure": 5,
+      "n_grid": 2,
+      "n_year": 4,
+      "n_block": 1,
+      "block_kish": 1.0,
+      "exposure_kish": 4.5,
+      "n_interaction_complete": 6,
+      "latitude_median": 40.9,
+      "longitude_median": 107.3,
+      "land_cover": {
+        "cropland": 4,
+        "grassland": 2
+      },
+      "years": {
+        "2017": 3,
+        "2018": 1,
+        "2019": 1,
+        "2020": 1
+      }
+    },
+    {
+      "version": 0,
+      "domain": "fr",
+      "n_event": 5,
+      "n_exposure": 5,
+      "n_grid": 2,
+      "n_year": 4,
+      "n_block": 1,
+      "block_kish": 1.0,
+      "exposure_kish": 5.0,
+      "n_interaction_complete": 5,
+      "latitude_median": 40.9,
+      "longitude_median": 107.3,
+      "land_cover": {
+        "cropland": 4,
+        "grassland": 1
+      },
+      "years": {
+        "2017": 2,
+        "2018": 1,
+        "2019": 1,
+        "2020": 1
+      }
+    },
+    {
+      "version": 1,
+      "domain": "all",
+      "n_event": 13706,
+      "n_exposure": 11622,
+      "n_grid": 3120,
+      "n_year": 16,
+      "n_block": 81,
+      "block_kish": 40.18828596354836,
+      "exposure_kish": 10267.513992129427,
+      "n_interaction_complete": 13706,
+      "latitude_median": 38.3,
+      "longitude_median": 110.6,
+      "land_cover": {
+        "grassland": 11282,
+        "cropland": 2401,
+        "other": 17,
+        "forest": 6
+      },
+      "years": {
+        "2008": 898,
+        "2009": 749,
+        "2010": 1154,
+        "2011": 1109,
+        "2012": 76,
+        "2013": 481,
+        "2014": 1254,
+        "2015": 1462,
+        "2016": 534,
+        "2017": 1648,
+        "2018": 782,
+        "2019": 625,
+        "2020": 790,
+        "2021": 860,
+        "2022": 631,
+        "2023": 653
+      }
+    },
+    {
+      "version": 1,
+      "domain": "recovery",
+      "n_event": 12179,
+      "n_exposure": 10714,
+      "n_grid": 3073,
+      "n_year": 16,
+      "n_block": 80,
+      "block_kish": 39.618304790664986,
+      "exposure_kish": 9669.994197796466,
+      "n_interaction_complete": 12179,
+      "latitude_median": 38.2,
+      "longitude_median": 110.6,
+      "land_cover": {
+        "grassland": 10037,
+        "cropland": 2122,
+        "other": 14,
+        "forest": 6
+      },
+      "years": {
+        "2008": 800,
+        "2009": 703,
+        "2010": 1107,
+        "2011": 979,
+        "2012": 50,
+        "2013": 286,
+        "2014": 1068,
+        "2015": 1360,
+        "2016": 509,
+        "2017": 1582,
+        "2018": 594,
+        "2019": 564,
+        "2020": 675,
+        "2021": 793,
+        "2022": 495,
+        "2023": 614
+      }
+    },
+    {
+      "version": 1,
+      "domain": "fr",
+      "n_event": 11645,
+      "n_exposure": 10304,
+      "n_grid": 3058,
+      "n_year": 16,
+      "n_block": 80,
+      "block_kish": 39.127931687282455,
+      "exposure_kish": 9324.487726053772,
+      "n_interaction_complete": 11645,
+      "latitude_median": 38.2,
+      "longitude_median": 110.6,
+      "land_cover": {
+        "grassland": 9604,
+        "cropland": 2022,
+        "other": 13,
+        "forest": 6
+      },
+      "years": {
+        "2008": 800,
+        "2009": 655,
+        "2010": 1105,
+        "2011": 903,
+        "2012": 46,
+        "2013": 250,
+        "2014": 1057,
+        "2015": 1266,
+        "2016": 473,
+        "2017": 1551,
+        "2018": 591,
+        "2019": 551,
+        "2020": 660,
+        "2021": 757,
+        "2022": 432,
+        "2023": 548
+      }
+    }
+  ],
+  "n_exposure_period_events": 55000,
+  "all_area_days_added_fraction": 0.26752901101322896,
+  "baseline_land_cover": {
+    "other": 482,
+    "grassland": 32765,
+    "cropland": 18604,
+    "forest": 3149
+  },
+  "baseline_latitude_median": 36.1,
+  "retained_annual_with_summer_below50": 1166,
+  "same_window_qc_changes": [
+    {
+      "land_cover": "all",
+      "n_exposure": 11622,
+      "median_base_change": 0.04164985647200892,
+      "median_absolute_base_change": 0.041660796359413055,
+      "median_absolute_trend_change": 0.008067369603721446,
+      "sign_reversal_fraction": 0.11667527103768714
+    },
+    {
+      "land_cover": "forest",
+      "n_exposure": 5,
+      "median_base_change": 0.06259739402943065,
+      "median_absolute_base_change": 0.06259739402943065,
+      "median_absolute_trend_change": 0.052720923406457676,
+      "sign_reversal_fraction": 0.4
+    },
+    {
+      "land_cover": "grassland",
+      "n_exposure": 9694,
+      "median_base_change": 0.03909217183856073,
+      "median_absolute_base_change": 0.039096213109652,
+      "median_absolute_trend_change": 0.007434967477514848,
+      "sign_reversal_fraction": 0.10676707241592738
+    },
+    {
+      "land_cover": "cropland",
+      "n_exposure": 1910,
+      "median_base_change": 0.06902006576350445,
+      "median_absolute_base_change": 0.06902006576350445,
+      "median_absolute_trend_change": 0.012057808113870238,
+      "sign_reversal_fraction": 0.16544502617801046
+    },
+    {
+      "land_cover": "other",
+      "n_exposure": 13,
+      "median_base_change": 0.024021978006140143,
+      "median_absolute_base_change": 0.024021978006140143,
+      "median_absolute_trend_change": 0.011987786219046448,
+      "sign_reversal_fraction": 0.23076923076923078
+    }
+  ],
+  "measurement_validation": "coverage_and_consistency_only_no_independent_truth"
+}

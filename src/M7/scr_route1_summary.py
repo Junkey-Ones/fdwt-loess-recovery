@@ -10,7 +10,7 @@ from statistics import NormalDist, mean, median, quantiles
 from src.M5.scr_derive_outcomes import index_series, sen_slope
 
 
-def recovery_risk(events, rows, params, *, horizon=None):
+def recovery_risk(events, rows, params, *, horizon=None, exposure_version="main"):
     """从 t_min 展开风险集，首次缺测后停止随访。"""
     index = index_series(rows)
     horizon = params["route1"]["recovery_risk_h"] if horizon is None else horizon
@@ -41,7 +41,7 @@ def recovery_risk(events, rows, params, *, horizon=None):
                              t_abs=t, at_risk=True, recovery_event=observed, censor_administrative=admin,
                              censor_missing=False, censor_data_end=False, censor_reason="administrative" if admin else None,
                              last_valid_t_abs=t, smp=row["smp"], active_flag=row.get("active_flag"),
-                             exposure_version="main", analysis_weight=1.0))
+                             exposure_version=exposure_version, analysis_weight=1.0))
             if observed:
                 break
     return risk

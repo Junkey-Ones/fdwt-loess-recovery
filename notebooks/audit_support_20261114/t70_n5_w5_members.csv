@@ -1,0 +1,8 @@
+﻿episode_id,grid_id,year,lat,lon,block_id,land_cover
+era5land__era5land:g000185:own_full:1284:20,g000185,2017,40.9,107.3,-2:3,cropland
+era5land__era5land:g000185:own_full:1344:20,g000185,2018,40.9,107.3,-2:3,cropland
+era5land__era5land:g000185:own_full:1429:20,g000185,2019,40.9,107.3,-2:3,cropland
+era5land__era5land:g000185:own_full:1492:20,g000185,2020,40.9,107.3,-2:3,cropland
+era5land__era5land:g000575:own_full:1284:20,g000575,2017,40.6,107.0,-2:3,grassland
+era5land__era5land:g000575:own_full:1289:20,g000575,2017,40.6,107.0,-2:3,grassland
+era5land__era5land:g000575:own_full:1344:20,g000575,2018,40.6,107.0,-2:3,grassland

@@ -17,7 +17,10 @@ def index_series(rows):
     result = {}
     for row in rows:
         key = (row["product_combo"], row["grid_id"], row["support_id"])
-        result.setdefault(key, {})[row["t_abs"]] = row
+        series = result.setdefault(key, {})
+        if row["t_abs"] in series:
+            raise ValueError(f"候序列主键重复：{key} {row['t_abs']}")
+        series[row["t_abs"]] = row
     return result
 
 

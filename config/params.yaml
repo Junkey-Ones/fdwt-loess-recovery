@@ -126,7 +126,7 @@ wet_process:
   allow_one_gap: false
 lai:
   mask_version: main
-  qc_version: main
+  qc_version: aerosol_allowed
   scale_factor: 0.1
   window_years: 5
   window_offset: y-5...y-1
@@ -201,6 +201,7 @@ trend:
   autocorr_trigger: ljung_box_lag1_p<0.05
 block:
   km: 100
+  resampling_unit: fixed_space
   bootstrap_n: 500
   bootstrap_min_success_fraction: 0.80
   two_way_cluster:

@@ -1,0 +1,142 @@
+[
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/event_branch.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/event_master.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/event_precip.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/event_recovery_trajectory.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/run.json",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/superblock_membership.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M5/wet_process_membership.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M6/event_exposure.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M6/exposure_cluster_audit.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M6/grid_static_covariates.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M6/run.json",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M6/vegetation_grid_year.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/model_fit_manifest.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/model_fit_manifest.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/model_marginal.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/model_marginal.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/model_result.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/model_result.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q1_annual.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q1_recovery_risk.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q1_recovery_risk.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q1_recovery_risk_sensitivity.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q1_trend_result.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q2_annual.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q2_fr_grid_year.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q2_fr_spatial.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q2_fr_spatial.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q2_lag_result.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/q2_lag_result.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/route1_model_uncertainty.csv",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/route1_model_uncertainty.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/route1_recovery_person_pentad.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/run.json",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/trend_estimate.parquet",
+    "match": true
+  },
+  {
+    "path": "data/frozen/downstream/2026-11-13_主分析X_QC修复/M7/trend_estimate_sensitivity.parquet",
+    "match": true
+  }
+]

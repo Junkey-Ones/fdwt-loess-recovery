@@ -82,6 +82,28 @@ def test_fr_after_active_window(params):
     assert not event["route1_FR_eligible"]
 
 
+def test_short_censored_events_do_not_bypass_duration(params):
+    """末端删失仍须达到观察持续门槛；达到门槛的右删失必须保留。"""
+    rows = synthetic_series()[:5]
+    events, audit = detect_events(rows, params)
+    assert not events and audit[0]["exclusion_reason"] == "持续不足"
+    rows.append(dict(rows[-1], t_abs=6, pentad=6, smp=15))
+    events, _ = detect_events(rows, params)
+    assert len(events) == 1 and events[0]["right_censored"]
+    assert events[0]["observed_duration"] == 4
+
+
+def test_duplicate_pentads_fail_instead_of_overwrite(params):
+    """重复候不允许被字典静默覆盖。"""
+    from src.M5.scr_derive_outcomes import index_series
+    rows = synthetic_series()
+    rows.append(dict(rows[-1], smp=0))
+    with pytest.raises(ValueError, match="主键重复"):
+        detect_events(rows, params)
+    with pytest.raises(ValueError, match="主键重复"):
+        index_series(rows)
+
+
 def test_q3_audit_counts_complete_cases_and_shared_exposures():
     """核对已知降水、post 对照排除、右删失和共享暴露簇。"""
     events = [dict(episode_id=key, route1_FR_eligible=True, F_R=flag, F_R_subtype=subtype)
@@ -176,7 +198,7 @@ def test_missing_hplus_one_and_leakage(params):
     assert exits[0]["exit_type"] is None and exits[0]["exit_type_unknown"]
     vegetation = [dict(grid_id="x", year=y, vegetation_product="mcd15a3h", phenology_mode="dynamic",
                        vegetation_annual_mean=100 if y == 2008 else y-2003, annual_valid=True,
-                       temporal_coverage=0.7, spatial_coverage=0.7, mask_version="main", qc_version="main")
+                       temporal_coverage=0.7, spatial_coverage=0.7, mask_version="main", qc_version=params["lai"]["qc_version"])
                   for y in range(2003, 2009)]
     vegetation.append(dict(vegetation[0], phenology_mode="fixed_season", vegetation_annual_mean=999))
     vegetation.append(dict(vegetation[0], qc_version="strict", vegetation_annual_mean=999))
@@ -194,6 +216,55 @@ def test_missing_hplus_one_and_leakage(params):
     incomplete, _ = link_exposures(master, rows, vegetation, {"x": covariates}, params)
     assert incomplete[0]["LAI_full_window"] and not incomplete[0]["exposure_complete_L"]
     assert incomplete[0]["core_covariate_missing_reason"] == "sand_0_30"
+    for row in vegetation:
+        row["qc_version"] = "outdated"
+    with pytest.raises(ValueError, match="QC版本"):
+        link_exposures(master, rows, vegetation, {}, params)
+
+
+def test_lai_four_of_five_uses_actual_years_and_preserves_gates(params):
+    """缺中间一年仍按真实时间求斜率；五年全有效则全部使用。"""
+    import json
+
+    rows = synthetic_series()
+    events, _ = detect_events(rows, params)
+    master, _, _, _ = derive_outcomes(events, rows, params)
+    master[0].update(land_cover="forest", active_window=30)
+    covariates = {"x": dict.fromkeys(params["covariates"]["core"], 1.0)}
+    vegetation = [dict(grid_id="x", year=y, vegetation_product="mcd15a3h", phenology_mode="dynamic",
+                       vegetation_annual_mean=100 if y == 2008 else y-2003, annual_valid=True,
+                       temporal_coverage=0.7, spatial_coverage=0.7,
+                       mask_version=params["lai"]["mask_version"], qc_version=params["lai"]["qc_version"])
+                  for y in (2003, 2004, 2006, 2007, 2008)]
+    strict, _ = link_exposures(master, rows, vegetation, covariates, params)
+    relaxed, audit = link_exposures(master, rows, vegetation, covariates, params, variant="lai_four_of_five")
+    assert strict[0]["LAI_base"] is None and not strict[0]["exposure_complete_L"]
+    result = relaxed[0]
+    assert result["LAI_base"] == 2 and result["LAI_trend"] == 1
+    assert result["LAI_window_eligible"] and not result["LAI_full_window"]
+    assert result["exposure_complete_L"] and not result["exposure_complete_I"]
+    assert result["LAI_required_valid_years"] == 4
+    assert json.loads(result["LAI_valid_years"]) == [2003, 2004, 2006, 2007]
+    assert result["LAI_valid_year_span"] == 4
+    assert result["LAI_exposure_cluster"] == "x:2008"
+    assert audit[0]["analysis_id"] == result["exposure_version"] == "lai_four_of_five"
+    vegetation[0]["temporal_coverage"] = 0.69
+    rejected, audit = link_exposures(master, rows, vegetation, covariates, params, variant="lai_four_of_five")
+    assert rejected[0]["LAI_n_valid_years"] == 3 and not rejected[0]["LAI_window_eligible"] and not audit
+    vegetation[0]["temporal_coverage"] = 0.7
+    vegetation.append(dict(vegetation[0], year=2005, vegetation_annual_mean=7))
+    complete, _ = link_exposures(master, rows, vegetation, covariates, params, variant="lai_four_of_five")
+    assert complete[0]["LAI_n_valid_years"] == 5 and complete[0]["LAI_full_window"]
+    assert complete[0]["LAI_base"] == 3
+
+
+def test_registered_lai_menu_options():
+    """向导公开严格与宽松方案，并保留固定季节选项。"""
+    from workflow.run_module import ROOT, variant_options
+
+    options = {key: label for key, label, _ in variant_options(load_config(ROOT / "config/specification_matrix.yaml"))}
+    assert "5/5" in options["main"] and "4/5" in options["lai_four_of_five"]
+    assert "fixed_season" in options
 
 
 def test_background_climate_rejects_duplicate_dates_and_nonfinite_days(params):

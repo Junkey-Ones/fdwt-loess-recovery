@@ -3,6 +3,7 @@
 日志、路径和退出码由统一入口管理。
 """
 from collections import defaultdict
+import json
 from math import cos, isfinite, pi, sin
 from random import Random
 from statistics import mean, stdev
@@ -18,9 +19,17 @@ def preceding_mean(series, t, width, field):
     return mean(values) if values and all(value is not None and isfinite(value) for value in values) else None
 
 
-def link_exposures(events, rows, vegetation, covariates, params, *, include_audit=True):
+def link_exposures(events, rows, vegetation, covariates, params, *, include_audit=True, variant="main"):
     """按事件起始年连接历史暴露，返回长表及暴露簇审计。"""
     settings = params["lai"]
+    required = (params["sensitivity"]["lai"]["relaxed_valid_years"] if variant == "lai_four_of_five"
+                else settings["main_requires_full"])
+    if not 2 <= required <= settings["window_years"]:
+        raise ValueError("LAI有效年数门槛必须在2与事件前窗口年数之间。")
+    version = "lai_four_of_five" if variant == "lai_four_of_five" else "main"
+    if vegetation and not any(row["mask_version"] == settings["mask_version"]
+                              and row["qc_version"] == settings["qc_version"] for row in vegetation):
+        raise ValueError("植被年表没有当前配置的掩膜及QC版本，不能将旧版输入静默当作全部缺失。")
     annual = {}
     for row in vegetation:
         if (not row["annual_valid"]
@@ -51,8 +60,9 @@ def link_exposures(events, rows, vegetation, covariates, params, *, include_audi
         lai = [(y, annual[grid_id, y, "mcd15a3h", mode]) for y in range(year-width, year)
                if (grid_id, y, "mcd15a3h", mode) in annual]
         full = eligible and len(lai) == width
-        cluster = f"{grid_id}:{year}" if full else None
-        if full and include_audit:
+        accepted = eligible and len(lai) >= required
+        cluster = f"{grid_id}:{year}" if accepted else None
+        if accepted and include_audit:
             clusters[(grid_id, year)].append(event["episode_id"])
         lookup = series[(event["product"], grid_id, event["support_id"])]
         shallow, deep = (preceding_mean(lookup, t, pre, field)
@@ -81,12 +91,15 @@ def link_exposures(events, rows, vegetation, covariates, params, *, include_audi
         missing = [name for name in params["covariates"]["core"]
                    if (value := core.get(name)) is None or
                    (name != "land_cover" and not isfinite(value))]
-        output.append(dict(core, episode_id=event["episode_id"], exposure_version="main", grid_id=grid_id,
+        output.append(dict(core, episode_id=event["episode_id"], exposure_version=version, grid_id=grid_id,
                            year=year, window_start_year=year-width, window_end_year=year-1, window_years=width,
-                           LAI_base=mean(value for _, value in lai) if full else None,
-                           LAI_trend=sen_slope(lai) if full else None, LAI_n_valid_years=len(lai),
+                           LAI_base=mean(value for _, value in lai) if accepted else None,
+                           LAI_trend=sen_slope(lai) if accepted else None, LAI_n_valid_years=len(lai),
+                           LAI_required_valid_years=required, LAI_window_eligible=accepted,
+                           LAI_valid_years=json.dumps([y for y, _ in lai]),
+                           LAI_valid_year_span=lai[-1][0]-lai[0][0] if lai else None,
                            LAI_full_window=full, LAI_exposure_cluster=cluster,
-                           LAI_missing_reason=None if full else ("历史年不全" if eligible else "事件年不在暴露期"),
+                           LAI_missing_reason=None if accepted else ("历史有效年不足" if eligible else "事件年不在暴露期"),
                            NDVI_base=mean(value for _, value in ndvi) if ndvi_full else None,
                            NDVI_trend=sen_slope(ndvi) if ndvi_full else None, NDVI_n_valid_years=len(ndvi),
                            NDVI_missing_reason=None if ndvi_full else "不在共同期或历史年不全",
@@ -96,17 +109,18 @@ def link_exposures(events, rows, vegetation, covariates, params, *, include_audi
                            deep_window_start_tabs=t-pre, deep_window_end_tabs=t-1,
                            deep_missing_reason=("事件前候不全" if deep is None else
                                                 "同候基准不足或零方差" if deep_z is None else None),
-                           exposure_complete_L=full and not missing, exposure_complete_D=deep_z is not None and not missing,
-                           exposure_complete_I=full and deep_z is not None and not missing,
+                           exposure_complete_L=accepted and not missing, exposure_complete_D=deep_z is not None and not missing,
+                           exposure_complete_I=accepted and deep_z is not None and not missing,
                            core_covariate_missing_reason="；".join(missing)))
-    return output, audit_clusters(clusters, params)
+    return output, audit_clusters(clusters, params, variant=variant)
 
 
-def audit_clusters(clusters, params):
+def audit_clusters(clusters, params, *, variant="main"):
     """使用同一随机种子和全域分母生成格点—年暴露簇审计。"""
     rng = Random(params["random"]["seed"])
     total = sum(map(len, clusters.values()))
-    return [dict(analysis_id="main", LAI_exposure_cluster=f"{grid_id}:{year}", grid_id=grid_id, year=year,
+    return [dict(analysis_id="lai_four_of_five" if variant == "lai_four_of_five" else "main",
+                  LAI_exposure_cluster=f"{grid_id}:{year}", grid_id=grid_id, year=year,
                   n_event=len(ids), cluster_event_fraction=len(ids)/total,
                   selected_event_seed_id=params["random"]["seed_id"], selected_episode_id=rng.choice(sorted(ids)),
                   inverse_cluster_weight=1/len(ids)) for (grid_id, year), ids in sorted(clusters.items())]

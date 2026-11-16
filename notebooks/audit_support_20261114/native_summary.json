@@ -1,0 +1,37 @@
+{
+  "n": 27,
+  "files_read": 538,
+  "strict_pass": 1,
+  "relaxed_pass": 10,
+  "max_time_error": 0.0,
+  "median_time_gain": 0.2566034320703706,
+  "lat_range": [
+    34.2,
+    39.5
+  ],
+  "lon_range": [
+    103.1,
+    114.4
+  ],
+  "forest": {
+    "n": 9,
+    "strict_pass": 0,
+    "relaxed_pass": 1,
+    "strict_time_median": 0.3228619542617799,
+    "relaxed_time_median": 0.5656578342356681
+  },
+  "grassland": {
+    "n": 9,
+    "strict_pass": 1,
+    "relaxed_pass": 8,
+    "strict_time_median": 0.5311966027856148,
+    "relaxed_time_median": 0.7664209016516652
+  },
+  "cropland": {
+    "n": 9,
+    "strict_pass": 0,
+    "relaxed_pass": 1,
+    "strict_time_median": 0.26102040616580907,
+    "relaxed_time_median": 0.595927711988698
+  }
+}

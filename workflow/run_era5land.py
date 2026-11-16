@@ -102,8 +102,8 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
     from src.M1.scr_audit_era5land import audit_era5land, digest, era5land_years
     from src.M2.scr_prepare_era5land import prepare_era5land
 
-    if plan["product_combo"] != "era5land__era5land" or plan["variant"] not in {"main", "fixed_season"}:
-        raise ValueError("当前 M1/M2 只接入 ERA5-Land 及已实现的主规范和固定季节。")
+    if plan["product_combo"] != "era5land__era5land" or plan["variant"] not in {"main", "fixed_season", "lai_four_of_five"}:
+        raise ValueError("当前 M1/M2 只接入 ERA5-Land 及主规范、LAI四年有效和固定季节方案。")
     if not plan["resume"]:
         raise ValueError("M1/M2 需要续接正式冻结的 M0。请先单独执行 M0 正式冻结，再用同一别名运行。")
     emit(progress, "M0", "核验冻结身份")

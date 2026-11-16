@@ -505,6 +505,10 @@ tables:
     - LAI_trend
     - LAI_n_valid_years
     - LAI_full_window
+    - LAI_window_eligible
+    - LAI_required_valid_years
+    - LAI_valid_years
+    - LAI_valid_year_span
     - LAI_exposure_cluster
     - LAI_missing_reason
     - NDVI_base
@@ -727,12 +731,20 @@ tables:
     - n_nonoutcome
     - n_block
     - n_superblock
+    - n_resampling_block
+    - n_year
+    - resampling_unit
+    - support_count_basis
     - n_eff
     - epv
     - conservative_epv
     - convergence_status
     - bootstrap_success
     - bootstrap_requested
+    - bootstrap_failure_counts
+    - land_cover_block_counts
+    - bootstrap_category_support_ceiling
+    - inference_warning
     - separation_flag
     - support_gate
     - inference_level
@@ -811,13 +823,13 @@ tables:
     columns: [year, n_recovered, n_known, n_positive, n_unknown, n_outside_active_window, proportion]
     primary_key: [year]
   q2_lag_result:
-    columns: [metric, domain, n_event, median, q25, q75, n_superblock, ci_low, ci_high]
+    columns: [metric, domain, n_event, median, q25, q75, n_superblock, n_resampling_block, ci_method, ci_low, ci_high]
     primary_key: [metric]
   q2_fr_grid_year:
     columns: [grid_id, year, block_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion]
     primary_key: [grid_id, year]
   q2_fr_spatial:
-    columns: [domain, domain_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion, n_superblock, ci_low, ci_high]
+    columns: [domain, domain_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion, n_superblock, n_resampling_block, ci_method, ci_low, ci_high]
     primary_key: [domain, domain_id]
   cross_product_event_match:
     columns: [product_combo, grid_id, main_episode_id, alt_episode_id, delta_ts, delta_tmin]

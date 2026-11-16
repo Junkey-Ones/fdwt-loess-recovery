@@ -6,11 +6,13 @@ import re
 import numpy as np
 
 
-def lai_qc(raw, qc, extra, *, strict=False):
-    """解码官方质量位，筛选可用原生像元。"""
+def lai_qc(raw, qc, extra, *, strict=False, allow_aerosol=False):
+    """解码质量位；候选修订仅释放气溶胶位，原始填充值仍排除。"""
+    # Extra_QC 第3位为气溶胶；116保留原124掩码中的其他质量限制。
+    extra_mask = 116 if allow_aerosol else 124
     return ((raw <= 100) & (qc != 255) & ((qc & 29) == 0)
             & ((qc >> 5) <= (0 if strict else 1)) & (extra != 255)
-            & ((extra & 3) <= 1) & ((extra & 124) == 0))
+            & ((extra & 3) <= 1) & ((extra & extra_mask) == 0))
 
 
 def composite_weights(year, calendar):
@@ -107,9 +109,10 @@ def vegetation_years(paths, grid, bbox, calendar, active, params, report):
     from pyhdf.SD import SD, SDC
 
     settings = params["lai"]
-    if settings["mask_version"] != "main" or settings["qc_version"] not in {"main","best_only"}:
-        raise ValueError("原生 LAI 前置仅支持主掩膜及主／Best-only QA。")
+    if settings["mask_version"] != "main" or settings["qc_version"] not in {"main","best_only","aerosol_allowed"}:
+        raise ValueError("原生 LAI 前置仅支持主掩膜及 main／best_only／aerosol_allowed QA。")
     strict = settings["qc_version"] == "best_only"
+    allow_aerosol = settings["qc_version"] == "aerosol_allowed"
     report("登记 LAI 文件", f"检查 {len(paths)} 个 HDF 的日期与瓦片编号")
     files = defaultdict(dict)
     tiles = set()
@@ -192,7 +195,7 @@ def vegetation_years(paths, grid, bbox, calendar, active, params, report):
                         finally:
                             field.endaccess()
                     raw,qc,extra=layers
-                    stack[slot]=np.where(lai_qc(raw,qc,extra,strict=strict),raw,255)
+                    stack[slot]=np.where(lai_qc(raw,qc,extra,strict=strict,allow_aerosol=allow_aerosol),raw,255)
                 finally:
                     ds.end()
                 done += 1

@@ -13,3 +13,5 @@
 ```
 
 Python 入口使用 `runtime={"profile": "custom", "workers": 4, "memory_gib": 6, "io_workers": 2}`。M1 按文件派发，M2 按月派发，均按时间顺序合并。运行配置在 dry-run 的 JSON 和执行日志中显示，与冻结科学参数分开。
+
+分析方案菜单读取规范矩阵的 `variant_labels`，开放 `main`（5/5主分析）、`lai_four_of_five`（同一五年窗至少四年有效）及原固定季节方案。方案键随M0冻结，后续模块必须选择同一键；两套LAI方案使用不同别名。阈值仍从统一参数读取，面板不接受自由输入有效年数。

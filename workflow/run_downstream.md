@@ -1,5 +1,9 @@
 # M3–M10 下游运行
 
+M6根据已冻结的 `variant` 执行5/5主方案或4/5敏感性，暴露簇以 `LAI_window_eligible` 筛选，避免误用仅表示五年完整的 `LAI_full_window`。M7模型清单与恢复风险人候表记录对应暴露版本；风险集本身不因LAI可用年数改变。两方案不自动跨运行别名复用数据。
+
+M3 已接入原生 MODIS 地类和物候前置：无已验收 `grid_support` 登记时，从 MCD12Q1/Q2 自动生成本次运行的格点支撑和审计，随 M3 一起冻结。来源文件逐一计入输入哈希；无需手动执行 `metadata/local/build_grid_support.py`，也不回写共享登记。已有合法标准表仍可复用；无原始文件则保留缺输入退出，部分缺档或来源改变会报错。详见 [M3原生支撑](../src/M3/scr_prepare_native_support.md)。
+
 从仓库根目录通过统一入口运行，例如：
 
 ```powershell

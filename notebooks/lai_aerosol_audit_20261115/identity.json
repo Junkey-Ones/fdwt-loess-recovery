@@ -1,0 +1,17 @@
+{
+  "kind": "nonproduction_aerosol_only_audit",
+  "bbox": [
+    102,
+    34,
+    115,
+    41
+  ],
+  "inputs": {
+    "F:\\fdwt-loess-recovery\\config\\params.yaml": "5c5c93eb50ab888b27902eb235be773054760f4c64ba6ecc27c9acf837c2abad",
+    "F:\\fdwt-loess-recovery\\notebooks\\lai_aerosol_full_20261115.py": "c48a80fae8d7c9e77ec4af254eae885a8cd90f7083978397064f062a15412de2",
+    "F:\\fdwt-loess-recovery\\data\\interim\\era5land_base\\2026-11-13_主分析X_QC修复\\grid_manifest.parquet": "676e60ba9c97f235160d4f85fcb6760aa1328beedb8a54fa427dbc356d4cf37f",
+    "F:\\fdwt-loess-recovery\\data\\interim\\era5land_base\\2026-11-13_主分析X_QC修复\\time_pentad_calendar.parquet": "eaa4f5817feffcdc4f54f6f619ac4093e183dc0fd18eae9ff130f598a877b0e8",
+    "F:\\fdwt-loess-recovery\\data\\frozen\\downstream\\2026-11-13_主分析X_QC修复\\M3\\grid_active_pentad.parquet": "530d80f55ccd3804b5a338806a96bf21841646fb3dbe7004b63b1c35b566d7f3",
+    "F:\\fdwt-loess-recovery\\data\\frozen\\downstream\\2026-11-13_主分析X_QC修复\\M6\\vegetation_grid_year.parquet": "cc14da1e949f511dd4335668f471ffcdb9d983dc85feeac1dcda9bd0611ace32"
+  }
+}

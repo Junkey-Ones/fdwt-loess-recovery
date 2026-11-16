@@ -15,7 +15,13 @@ def detect_events(rows, params, *, ordered=False):
     if not ordered:
         rows = sorted(rows, key=lambda row: (*group_key(row), row["t_abs"]))
     for key, group in groupby(rows, group_key):
-        series = {row["t_abs"]: row for row in group}
+        series = {}
+        for row in group:
+            if row["t_abs"] in series:
+                raise ValueError(f"骤旱候序列主键重复：{key} {row['t_abs']}")
+            series[row["t_abs"]] = row
+        if list(series) != sorted(series):
+            raise ValueError(f"骤旱候序列未按时间排序：{key}")
         anchor = None
         consumed = -1
         last_t = max(series)
@@ -50,7 +56,7 @@ def detect_events(rows, params, *, ordered=False):
                 reasons.append("最低值未低于阈值")
             if rate is None or rate < rules["drop_rate_pct_per_pentad"]:
                 reasons.append("下降锚点或速率不合格")
-            if observed < rules["min_duration_pentads"] and (termination is not None or stop <= last_t):
+            if observed < rules["min_duration_pentads"]:
                 reasons.append("持续不足")
             episode = ":".join(map(str, (*key, t, recovery)))
             active = bool(row.get("active_flag"))

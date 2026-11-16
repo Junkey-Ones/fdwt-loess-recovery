@@ -332,7 +332,18 @@ families:
   - alpha_41
 selectable_variants:
 - main
+- lai_four_of_five
 - fixed_season
+variant_labels:
+  main:
+    label: 5/5年严格方案（主分析）
+    description: 动态物候；事件前五年全部有效；年度时间与空间覆盖均至少70%
+  lai_four_of_five:
+    label: 4/5年方案（预设敏感性）
+    description: 同一五年窗至少四年有效；按实际年份计算趋势；覆盖和QC不变
+  fixed_season:
+    label: 固定季节方案（5/5年）
+    description: 物候改为固定4—9月；仍要求五年全部有效；不与4/5叠加
 applicability:
   unlisted_family: 该估计对象未登记该定义族，记 not_applicable。
   unsupported_input: 未获数据放行或缺少适用年份、变量或网格时，记 not_applicable 并列明原因。

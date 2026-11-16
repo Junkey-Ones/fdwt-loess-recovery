@@ -10,11 +10,13 @@
 """
 from collections import Counter, defaultdict
 from math import erfc, sqrt
+import json
 
 import numpy as np
 
 from src.M7.scr_fit_recovery_risk import fit_grouped_cloglog, natural_spline
 from src.M7.scr_route1_summary import holm
+from src.M7.scr_spatial_inference import bootstrap_method, resampling_label, resampling_scheme
 
 
 def logistic(eta):
@@ -226,8 +228,11 @@ def summarize_fr_support(events, blocks, superblocks, params):
         totals = defaultdict(lambda: np.zeros(2, dtype=int))
         for row in items:
             if row["block_id"] is not None and row["n_known"]:
-                totals[superblocks.get(row["block_id"], row["block_id"])] += (row["n_positive"], row["n_known"])
-        result["n_superblock"] = len(totals)
+                totals[resampling_label(row["block_id"], superblocks, params)] += (row["n_positive"], row["n_known"])
+        result["n_superblock"] = len({superblocks.get(row["block_id"], row["block_id"])
+                                     for row in items if row["block_id"] is not None and row["n_known"]})
+        result["n_resampling_block"] = len(totals)
+        result["ci_method"] = bootstrap_method(params)
         if len(totals) >= params["infer"]["min_blocks"] and sum(x[1] for x in totals.values()) == n:
             rng = np.random.default_rng(params["random"]["seed"])
             counts_by_block = np.stack(list(totals.values()))
@@ -242,19 +247,22 @@ def summarize_fr_support(events, blocks, superblocks, params):
 
 
 def lag_intervals(events, lag_summary, blocks, superblocks, params):
-    """按超级块重抽样计算三个预设候差中位数的区间。"""
+    """按配置的空间抽样单元计算候差中位数区间，保留原连接诊断。"""
     rng = np.random.default_rng(params["random"]["seed"])
     alpha = params["multiple_testing"]["family_alpha"]
     for summary in lag_summary:
         metric = summary["metric"]
         groups = defaultdict(list)
+        diagnostic_blocks = set()
         for row in events:
             include = row["P_term"] is True if metric == "Lag_P" else (
                 row["route1_FR_eligible"] and row["F_R"] is True)
             block = blocks.get(row["grid_id"])
             if include and block is not None:
-                groups[superblocks.get(block, block)].append(row[metric])
-        summary.update(ci_low=None, ci_high=None, n_superblock=len(groups))
+                groups[resampling_label(block, superblocks, params)].append(row[metric])
+                diagnostic_blocks.add(superblocks.get(block, block))
+        summary.update(ci_low=None, ci_high=None, n_superblock=len(diagnostic_blocks),
+                       n_resampling_block=len(groups), ci_method=bootstrap_method(params))
         if len(groups) < params["infer"]["min_blocks"] or sum(map(len, groups.values())) != summary["n_event"]:
             continue
         arrays = [np.asarray(groups[key]) for key in sorted(groups)]
@@ -265,7 +273,7 @@ def lag_intervals(events, lag_summary, blocks, superblocks, params):
         summary["ci_low"], summary["ci_high"] = map(float, np.quantile(draws, [alpha/2, 1-alpha/2]))
 
 
-def fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity):
+def fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity, report=None):
     """拟合冻结的 Q2／Q3 主模型，保留门槛、区间和家族检验。"""
     by_id = {row["episode_id"]: row for row in exposures}
     histories = defaultdict(list)
@@ -289,8 +297,10 @@ def fit_route1_models(events, exposures, risk, blocks, superblocks, params, iden
                            [row for row in sample if row[f"exposure_complete_{model}"]], test))
     manifests, coefficients, marginal, uncertainty = [], [], [], []
     for spec in models:
+        if report:
+            report("拟合预设模型", spec[0])
         fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
-                      manifests, coefficients, marginal, uncertainty)
+                      manifests, coefficients, marginal, uncertainty, report=report)
     for family, tests in params["multiple_testing"]["families"].items():
         lookup = {row["test_id"]: row for row in coefficients if row.get("test_family") == family}
         for test, p in zip(tests, holm([lookup.get(test, {}).get("p_raw") for test in tests])):
@@ -301,7 +311,7 @@ def fit_route1_models(events, exposures, risk, blocks, superblocks, params, iden
 
 
 def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
-                  manifests, coefficients, marginal, uncertainty):
+                  manifests, coefficients, marginal, uncertainty, report=None):
     """执行单个预设模型及其两个依赖性区间。"""
     analysis, question, family, outcome, terms, candidates, test = spec
     rows = [row for row in candidates if blocks.get(row["grid_id"]) is not None
@@ -311,15 +321,20 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
             and (bool(histories.get(row["episode_id"])) if family == "cloglog"
                  else row.get(outcome) is not None and np.isfinite(row[outcome]))]
     labels = [blocks[row["grid_id"]] for row in rows]
-    spatial = [superblocks.get(block, block) for block in labels]
+    spatial = [resampling_label(block, superblocks, params) for block in labels]
     lai_clusters = [row["LAI_exposure_cluster"] for row in rows] if "LAI_trend" in terms else []
     cluster_sizes = list(Counter(lai_clusters).values())
     n = len(rows)
     years = [row["year"] for row in rows]
     status = dict(analysis_id=analysis, question=question, estimand=analysis,
                   model_family=family, model_code=analysis.rsplit("_", 1)[-1], outcome=outcome,
-                  exposure_version="main", n_event=n, n_before=len(candidates),
-                  n_block=len(set(labels)), n_superblock=len(set(spatial)),
+                  exposure_version="lai_four_of_five" if identity.get("variant") == "lai_four_of_five" else "main",
+                  n_event=n, n_before=len(candidates),
+                  n_block=len(set(labels)),
+                  n_superblock=len({superblocks.get(block, block) for block in labels}),
+                  n_resampling_block=len(set(spatial)), n_year=len(set(years)),
+                  resampling_unit=resampling_scheme(params),
+                  support_count_basis="min_event_resampling_kish_exposure_kish",
                   n_exposure=len(cluster_sizes) if "LAI_trend" in terms else None,
                   cluster_size_median=float(np.median(cluster_sizes)) if cluster_sizes else None,
                   cluster_size_p95=float(np.quantile(cluster_sizes, .95)) if cluster_sizes else None,
@@ -331,6 +346,16 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
                   inference_level="descriptive_only", random_seed_id=params["random"]["seed_id"],
                   run_id=identity.get("run_id"), code_hash=identity.get("code_hash"))
     manifests.append(status)
+    cover_blocks = defaultdict(set)
+    if "land_cover" in core:
+        for row, block in zip(rows, spatial):
+            cover_blocks[row["land_cover"]].add(block)
+    status["land_cover_block_counts"] = json.dumps({k: len(v) for k, v in sorted(cover_blocks.items())})
+    n_spatial = len(set(spatial))
+    ceiling = min((1 - (1-len(v)/n_spatial)**n_spatial for v in cover_blocks.values()), default=1.)
+    status["bootstrap_category_support_ceiling"] = ceiling if n_spatial else None
+    status["inference_warning"] = ("地类集中于少数空间块；缺类抽样将秩亏，自举成功率可能不足"
+        if cover_blocks and ceiling < params["block"]["bootstrap_min_success_fraction"] else None)
     term = "fr_pre_sync" if question == "Q2" else "LAI_trend_x_deep" if analysis.endswith("_I") else "LAI_trend"
     if test:
         coefficients.append(dict(analysis_id=analysis, term=term, scale="link" if family != "median" else "original",
@@ -413,17 +438,28 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
     rng = np.random.default_rng(params["random"]["seed"])
     draws, margin_draws = [], []
     repetitions = params["block"]["bootstrap_n"]
-    for _ in range(repetitions):
+    failures = Counter()
+    for repetition in range(repetitions):
+        if report and repetition % 10 == 0:
+            report("空间块自举", f"{analysis} · 成功{len(draws)}次 · 失败{sum(failures.values())}次",
+                   done=repetition, total=repetitions, unit="次")
         sampled = rng.integers(len(spatial_ids), size=len(spatial_ids))
         weights = np.bincount(sampled, minlength=len(spatial_ids))[codes]
-        draw, _ = fit_coefficients(design, y, weights[event_index], family)
+        draw, reason = fit_coefficients(design, y, weights[event_index], family)
         if draw is not None:
             draws.append(draw)
             if use_margins:
                 margin_draws.append(margins(names, x, draw, family, time, deep))
+        else:
+            failures[reason] += 1
+    if report:
+        report("空间块自举", f"{analysis} · 成功{len(draws)}次 · 失败{sum(failures.values())}次",
+               done=repetitions, total=repetitions, unit="次")
+    status["bootstrap_failure_counts"] = json.dumps(dict(sorted(failures.items())))
     status["bootstrap_success"] = len(draws)
     status["bootstrap_requested"] = repetitions
     if len(draws) < repetitions*params["block"]["bootstrap_min_success_fraction"]:
+        status["inference_warning"] = "自举成功率不足；保留点估计，正式联合区间和检验不放行"
         draws, margin_draws = [], []
     standard_errors = np.sqrt(np.maximum(0, np.diag(covariance))) if covariance is not None else [None]*width
     formal_intervals = True
@@ -449,25 +485,25 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
                       ci_method="union" if combined[0] is not None else None,
                       p_raw=p if name == term and test else None,
                       standardization=(f"mean={scales[name][0]};sd={scales[name][1]}" if name in scales else None))
-        uncertainty.extend(interval_rows(analysis, name, "coefficient", boot, clustered))
+        uncertainty.extend(interval_rows(analysis, name, "coefficient", boot, clustered, bootstrap_method(params)))
     if (test and coefficients_for_model[term].get("p_raw") is not None and
             (not analysis.endswith("_I") or use_margins)) or (
             not test and formal_intervals):
         status["inference_level"] = "formal"
     if use_margins:
         write_margins(analysis, names, x, beta, family, time, deep, quantiles, scales, covariance,
-                      predicted, margin_draws, alpha, marginal, uncertainty)
+                      predicted, margin_draws, alpha, marginal, uncertainty, bootstrap_method(params))
 
 
-def interval_rows(analysis, term, quantity, boot, clustered):
+def interval_rows(analysis, term, quantity, boot, clustered, method="superblock_bootstrap"):
     """展开两种区间及其对应的估计量。"""
     return [dict(analysis_id=analysis, term=term, quantity=quantity, ci_method=method,
                  ci_low=bounds[0], ci_high=bounds[1])
-            for method, bounds in (("superblock_bootstrap", boot), ("block_year", clustered))]
+            for method, bounds in ((method, boot), ("block_year", clustered))]
 
 
 def write_margins(analysis, names, x, beta, family, time, deep, quantiles, scales, covariance,
-                  predicted, draws, alpha, marginal, uncertainty):
+                  predicted, draws, alpha, marginal, uncertainty, method="superblock_bootstrap"):
     """输出两个 LAI 水平的概率、差值及两种区间。"""
     gradient = None
     if covariance is not None:
@@ -488,7 +524,7 @@ def write_margins(analysis, names, x, beta, family, time, deep, quantiles, scale
                     se = sqrt(variance)
             boot, clustered, bounds = intervals(predicted[i, j], [draw[i, j] for draw in draws], se, alpha)
             combined.append(bounds)
-            uncertainty.extend(interval_rows(analysis, reference, quantity, boot, clustered))
+            uncertainty.extend(interval_rows(analysis, reference, quantity, boot, clustered, method))
         for j, label in enumerate(("mean", "plus_1sd")):
             low, high = combined[j]
             marginal.append(dict(analysis_id=analysis, term="LAI_trend", deep_reference=reference,

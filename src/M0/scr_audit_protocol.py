@@ -81,6 +81,12 @@ def audit_protocol(params, schema, matrix, freeze, documents, inputs):
                        "detail": detail})
 
     version = params["protocol"]["version"]
+    record("lai_qc_version", params["lai"]["qc_version"] in {"main", "best_only", "aerosol_allowed"},
+           "LAI质量版本须由原生M6识别；气溶胶修订使用独立版本名以隔离旧年表")
+    record("spatial_resampling",
+           params["block"].get("resampling_unit", "superblock") in {"fixed_space", "superblock"}
+           and params["block"]["two_way_cluster"] == ["space", "year"],
+           "空间抽样单元须显式可识别，并保留固定空间块与事件起始年份双向修正")
     record("protocol_version",
            version == schema["schema_version"] == matrix["protocol_version"] == freeze["protocol_version"]
            and all(version in inputs[path].decode("utf-8-sig").partition("\n")[0]

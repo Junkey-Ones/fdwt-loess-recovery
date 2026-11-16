@@ -174,15 +174,16 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             if done % 16 == 0:
                 emit(progress, "M6", "连接事件前暴露", f"连接格点 {grid_id} 的植被与深层土壤水",
                      done=done, total=total, unit="格点")
-            linked, _ = link_exposures(group, rows, vegetation_by_grid[grid_id], static, params, include_audit=False)
+            linked, _ = link_exposures(group, rows, vegetation_by_grid[grid_id], static, params,
+                                       include_audit=False, variant=plan["variant"])
             exposures.extend(linked)
             for row in linked:
-                if row["LAI_full_window"]:
+                if row["LAI_window_eligible"]:
                     clusters[grid_id, row["year"]].append(row["episode_id"])
             done += 1
         emit(progress, "M6", "审计暴露簇", f"核对 {len(clusters)} 个格点×年份暴露簇")
         result["event_exposure"] = exposures
-        result["exposure_cluster_audit"] = audit_clusters(clusters, params)
+        result["exposure_cluster_audit"] = audit_clusters(clusters, params, variant=plan["variant"])
         result["vegetation_grid_year"] = annual
         details["complete_cases"] = {
             model: sum(row[f"exposure_complete_{model}"] for row in exposures) for model in ("L", "D", "I")}
@@ -195,18 +196,21 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         blocks = {row["grid_id"]: row["block_id"] for row in read("grid_manifest")}
         settings = params["route1"]
         horizons = params["sensitivity"]["followup"]
+        exposure_version = "lai_four_of_five" if plan.get("variant") == "lai_four_of_five" else "main"
         risk, sensitivity_risk = [], {version: [] for version in horizons}
         for _, group, rows in event_pentads(events, ["smp", "active_flag"]):
             restore_fr_eligibility(group, rows)
-            risk.extend(recovery_risk(group, rows, params))
+            risk.extend(recovery_risk(group, rows, params, exposure_version=exposure_version))
             for version, horizon in horizons.items():
-                sensitivity_risk[version].extend(recovery_risk(group, rows, params, horizon=horizon))
+                sensitivity_risk[version].extend(recovery_risk(group, rows, params, horizon=horizon,
+                                                              exposure_version=exposure_version))
         result["route1_recovery_person_pentad"] = risk
         exposures = read("event_exposure")
         details["model_candidate_samples"] = audit_model_samples(events, exposures, risk)
         superblocks = {row["block_id"]: row["superblock_id"] for row in read("superblock_membership")}
         result["q2_fr_grid_year"], result["q2_fr_spatial"] = summarize_fr_support(events, blocks, superblocks, params)
-        result.update(fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity or {}))
+        result.update(fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity or {},
+            report=lambda stage, detail, **counts: emit(progress, "M7", stage, detail, **counts)))
         details["model_status"] = {row["analysis_id"]: row["inference_level"] for row in result["model_fit_manifest"]}
         result["q1_recovery_risk"], details["q1_recovery_risk"] = recovery_time_baseline(
             risk, events, blocks, settings["recovery_risk_h"], settings["recovery_time_df"], params["infer"])
@@ -400,8 +404,8 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
     """串联既有 M1/M2 和下游模块，支持冻结交接复用。"""
     from src.M1.scr_audit_era5land import digest
 
-    if plan["product_combo"] != params["products"]["main"] or plan["variant"] not in {"main", "fixed_season"}:
-        raise ValueError("当前下游编排仅接受 ERA5-Land 与已接入的主规范或固定季节。")
+    if plan["product_combo"] != params["products"]["main"] or plan["variant"] not in {"main", "fixed_season", "lai_four_of_five"}:
+        raise ValueError("当前下游编排仅接受 ERA5-Land 与主规范、LAI四年有效或固定季节方案。")
     revision = None
     if plan["resume"] and "M5" in plan["modules"]:
         from .resume_m5 import load_m5_revision
@@ -487,6 +491,17 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                 raise ValueError(f"缺少 {module} 冻结回执，无法接续。")
             native = {}
             native_supplements = supplements
+            if module == "M3" and "grid_support" not in supplements:
+                from src.M3.scr_prepare_native_support import native_support_sources
+
+                emit(progress, module, "盘点原生输入", "查找地类MCD12Q1和物候MCD12Q2年度瓦片")
+                files = native_support_sources(root, params)
+                if files:
+                    native = {"grid_support": files}
+                for done, path in enumerate(files):
+                    emit(progress, module, "核验前置原始数据", f"计算 {path.name} 的 SHA-256",
+                         done=done, total=len(files), unit="文件")
+                    inputs.append(item(path))
             if module == "M6":
                 from src.M6.scr_prepare_native import native_sources
 
@@ -514,7 +529,22 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                     with TemporaryDirectory(dir=destination, prefix=".stage-") as tmp:
                         stage = Path(tmp) / module
                         stage.mkdir()
-                        if native:
+                        if native and module == "M3":
+                            from csv import DictReader
+                            import pyarrow.parquet as pq
+                            from src.M3.scr_prepare_native_support import prepare_native_support
+
+                            with (root / "metadata/study_area_manifest.csv").open(encoding="utf-8-sig") as stream:
+                                bbox, = [json.loads(row["bbox"]) for row in DictReader(stream)
+                                         if row["acceptance_status"] == "accepted"]
+                            rows, audit = prepare_native_support(native["grid_support"],
+                                pq.read_table(tables["grid_manifest"]).to_pylist(), params, bbox,
+                                lambda stage, detail, **counts: emit(progress, module, stage, detail, **counts))
+                            target = stage / "grid_support.json"
+                            atomic_write(target, json_bytes(rows))
+                            atomic_write(stage / "grid_support_audit.json", json_bytes(audit))
+                            native_supplements = {**supplements, "grid_support": target}
+                        if native and module == "M6":
                             from src.M6.scr_prepare_native import prepare_native_inputs
 
                             with (root / "metadata/study_area_manifest.csv").open(encoding="utf-8-sig") as stream:

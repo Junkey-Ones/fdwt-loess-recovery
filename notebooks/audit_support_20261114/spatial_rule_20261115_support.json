@@ -1,0 +1,62 @@
+[
+  {
+    "outcome": "recovery",
+    "model": "D",
+    "n_event": 50965,
+    "n_resampling_block": 89,
+    "n_diagnostic_superblock": 1,
+    "n_year": 21,
+    "support_kish": 67.08779438083585,
+    "spatial_support_gate": true
+  },
+  {
+    "outcome": "recovery",
+    "model": "L",
+    "n_event": 6,
+    "n_resampling_block": 1,
+    "n_diagnostic_superblock": 1,
+    "n_year": 4,
+    "support_kish": 1.0,
+    "spatial_support_gate": false
+  },
+  {
+    "outcome": "recovery",
+    "model": "I",
+    "n_event": 6,
+    "n_resampling_block": 1,
+    "n_diagnostic_superblock": 1,
+    "n_year": 4,
+    "support_kish": 1.0,
+    "spatial_support_gate": false
+  },
+  {
+    "outcome": "fr",
+    "model": "D",
+    "n_event": 48789,
+    "n_resampling_block": 89,
+    "n_diagnostic_superblock": 1,
+    "n_year": 21,
+    "support_kish": 67.09780197486909,
+    "spatial_support_gate": true
+  },
+  {
+    "outcome": "fr",
+    "model": "L",
+    "n_event": 5,
+    "n_resampling_block": 1,
+    "n_diagnostic_superblock": 1,
+    "n_year": 4,
+    "support_kish": 1.0,
+    "spatial_support_gate": false
+  },
+  {
+    "outcome": "fr",
+    "model": "I",
+    "n_event": 5,
+    "n_resampling_block": 1,
+    "n_diagnostic_superblock": 1,
+    "n_year": 4,
+    "support_kish": 1.0,
+    "spatial_support_gate": false
+  }
+]

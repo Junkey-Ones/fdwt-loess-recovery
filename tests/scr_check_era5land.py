@@ -74,7 +74,8 @@ def write_native(path, fields, start, count):
                 variable[:] = (sign * step / 24000)[:, None, None]
 
 
-def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_support,variant", [(False, "main"), (True, "lai_four_of_five")])
+def test_m0_m1_m2_handoff(tmp_path, monkeypatch, native_support, variant):
     """验证合成闰年贯通、E3/E4 数值、Parquet 键与原始哈希阻断。"""
     original = runner.ROOT
     for name in ("config", "metadata", "docs", "workflow"):
@@ -111,8 +112,11 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
     local.write_text(yaml.safe_dump({key: evidence for key in
                                     ("instant", "accumulated", "runoff_components", "terminal")}),
                      encoding="utf-8")
-    options = {"config_path": config_path, "run_alias": "2026-11-10_合成验证"}
+    options = {"config_path": config_path, "run_alias": "2026-11-10_合成验证", "variant": variant}
     assert runner.run_module("M0", freeze=True, **options)["m0_audit"]["formal_freeze_written"]
+    mismatch = {**options, "variant": "main" if variant == "lai_four_of_five" else "lai_four_of_five"}
+    with pytest.raises(ValueError, match="冻结身份与请求不匹配"):
+        runner.run_module("M2", **mismatch)
     from types import SimpleNamespace
 
     events = []
@@ -166,12 +170,34 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
                              segments=[[f"{y}-04-01", f"{y}-09-30"]]) for y in range(2015, 2021)])
         for cell in grid]), encoding="utf-8")
     manifest = tmp_path / params["downstream"]["supplement_manifest"]
-    manifest.write_text(json.dumps({"grid_support": {
-        "status": "accepted", "path": support.relative_to(tmp_path).as_posix(), "sha256": digest(support),
-        "sources": [{"path": entries[0][0].as_posix(), "sha256": digest(tmp_path / entries[0][0])}],
-    }}), encoding="utf-8")
+    calls = []
+    if native_support:
+        from src.M3 import scr_prepare_native_support as native_m3
+
+        native_file = tmp_path / "data/raw/synthetic_modis.hdf"
+        native_file.write_bytes(b"synthetic native source")
+        monkeypatch.setattr(native_m3, "native_support_sources", lambda root, cfg: [native_file])
+
+        def build_support(paths, current_grid, cfg, bbox, report):
+            calls.append(paths)
+            assert current_grid == grid
+            return json.loads(support.read_bytes()), {"grid_cells": len(grid)}
+
+        monkeypatch.setattr(native_m3, "prepare_native_support", build_support)
+    else:
+        manifest.write_text(json.dumps({"grid_support": {
+            "status": "accepted", "path": support.relative_to(tmp_path).as_posix(), "sha256": digest(support),
+            "sources": [{"path": entries[0][0].as_posix(), "sha256": digest(tmp_path / entries[0][0])}],
+        }}), encoding="utf-8")
     route1 = runner.run_module("route1", **options)
     assert route1["module_status"]["M3"] == "passed"
+    if native_support:
+        m3 = Path(route1["downstream"]) / "M3"
+        assert json.loads((m3 / "grid_support.json").read_bytes()) == json.loads(support.read_bytes())
+        assert json.loads((m3 / "grid_support_audit.json").read_bytes())["grid_cells"] == len(grid)
+        receipt = json.loads((m3 / "module_io.json").read_bytes())
+        assert any(row["path"].endswith("synthetic_modis.hdf") for row in receipt["input_files"])
+        assert not manifest.exists()
     from workflow.run_downstream import compute_module
 
     old_m3, _, _ = compute_module("M3", {path.stem: path for path in out.glob("*.parquet")},
@@ -192,8 +218,12 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch):
     assert (figures.parent / "reports/route2_exit_report.md").is_file()
     assert (figures.parent / "tables/route2_sample_audit.csv").is_file()
     assert full["module_status"]["M10"] == "descriptive_only"
-    support.write_text("[]", encoding="utf-8")
-    with pytest.raises(ValueError, match="哈希不符"):
+    if native_support:
+        assert len(calls) == 1
+        native_file.write_bytes(b"changed")
+    else:
+        support.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="哈希不符|输入已变化"):
         runner.run_module("full", **options)
     with (tmp_path / entries[0][0]).open("ab") as raw:
         raw.write(b"changed")

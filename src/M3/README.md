@@ -4,3 +4,4 @@
 
 - [scr_build_climatology](scr_build_climatology.md)
 - [scr_prepare_support](scr_prepare_support.md)
+- [scr_prepare_native_support](scr_prepare_native_support.md)：无已登记格点支撑时自动从MCD12Q1/Q2生成地类、物候输入。

@@ -93,6 +93,13 @@ def build_run_id(params, params_hash, code_hash):
     return f'{params["protocol"]["version"]}__{params_hash[:12]}__{code_hash[:12]}__{seed["seed_id"]}'
 
 
+def variant_options(matrix):
+    """从已登记方案读取中文标签，面板不收集自由科学阈值。"""
+    labels = matrix.get("variant_labels", {})
+    return [(key, labels.get(key, {}).get("label", key), labels.get(key, {}).get("description", ""))
+            for key in matrix["selectable_variants"]]
+
+
 def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, formal_freeze):
     """收集只读审计输入并将单次审计明细原子封存到日志目录。"""
     from src.M0.scr_audit_protocol import audit_protocol
@@ -274,8 +281,8 @@ def wizard(args, panel):
                                             section="03/05  数据与规范")
         variants = matrix["selectable_variants"]
         if len(variants) > 1:
-            args.variant = panel.menu("选择已放行的规范变体",
-                                      [(key, key, "") for key in variants], variants[0],
+            args.variant = panel.menu("选择分析方案（M0冻结与后续执行须一致）",
+                                      variant_options(matrix), variants[0],
                                       section="03/05  数据与规范")
 
     def choose_resources():
@@ -331,7 +338,7 @@ def wizard(args, panel):
         ), section="05/05  确认计划", check=confirm, details=(
             f"模块顺序  {' → '.join(ordered)}",
             f"运行版本  {args.run_alias}（{'全新' if args.new else '续接现有别名'}）",
-            f"数据组合  {args.product_combo}    规范  {args.variant}",
+            f"数据组合  {args.product_combo}    方案  {matrix.get('variant_labels', {}).get(args.variant, {}).get('label', args.variant)} ({args.variant})",
             *runtime_lines(resources),
             *paths,
         ))
