@@ -100,7 +100,7 @@ def test_rare_category_bootstrap_failure_is_reported():
     row = manifest[0]
     assert row["inference_level"] == "point_estimate"
     assert row["bootstrap_success"] < 80
-    assert json.loads(row["bootstrap_failure_counts"])["rank_deficient"] > 0
+    assert json.loads(row["bootstrap_failure_counts"])["missing_land_cover"] > 0
     assert json.loads(row["land_cover_block_counts"])["forest"] == 1
     assert row["bootstrap_category_support_ceiling"] == pytest.approx(1-(23/24)**24)
     assert "成功率不足" in row["inference_warning"]

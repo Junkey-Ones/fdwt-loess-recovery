@@ -37,14 +37,20 @@ def build_climatology(rows, support, params, combo):
         info = support[grid_id]
         if not info["mask_include"]:
             continue
-        buckets = defaultdict(list)
+        # 只用基准期内真实相邻候。首年1候没有前邻，末年末候没有后邻。
+        by_calendar = {}
         for row in group:
             if first <= row["year"] <= last:
-                buckets[row["pentad"]].append(row)
+                position = (row["year"] - first) * count + row["pentad"] - 1
+                if position in by_calendar:
+                    raise ValueError(f"格点日历候重复：{grid_id} {row['year']} {row['pentad']}")
+                by_calendar[position] = row
         pools = {}
         for p in range(1, count+1):
-            sample = [row for offset in settings["pentad_pool"]
-                      for row in buckets[(p + offset - 1) % count + 1]]
+            sample = [by_calendar[position]
+                      for center in range(p-1, (last-first+1)*count, count)
+                      for offset in settings["pentad_pool"]
+                      if (position := center+offset) in by_calendar]
             sm, rain_values, balance = (
                 sorted(row[field] for row in sample if row.get(field) is not None)
                 for field in ("sm_0_100_mm", "p_mm", "balance_mm"))

@@ -18,13 +18,15 @@ class ProgressEvent:
     total: int | None = None
     unit: str = ""
     state: str = "running"
+    operation: str = ""
+    path: str = ""
 
 
-def emit(callback, module, stage, detail="", *, done=0, total=None, unit="", state="running"):
+def emit(callback, module, stage, detail="", *, done=0, total=None, unit="", state="running", operation="", path=""):
     """优先传递结构化事件，兼容原有三参数回调。"""
     if callback is None:
         return
-    event = ProgressEvent(module, stage, detail, done, total, unit, state)
+    event = ProgressEvent(module, stage, detail, done, total, unit, state, operation, str(path) if path else "")
     if hasattr(callback, "event"):
         callback.event(event)
     else:
@@ -194,7 +196,8 @@ class RunProgress:
                 self.module_started.setdefault(event.module, now)
                 if event.state in TERMINAL:
                     self.durations[event.module] = now - self.module_started[event.module]
-        if (changed or old.state != event.state) and self.on_stage_change is not None:
+        file_changed = bool(event.path) and (event.path, event.operation) != (old.path, old.operation)
+        if (changed or old.state != event.state or file_changed) and self.on_stage_change is not None:
             self.on_stage_change()
 
     def __call__(self, step, detail, fraction):
@@ -215,9 +218,9 @@ class RunProgress:
             stale = now - self.reported
             samples = [(t, n) for t, n in self.samples if t >= now - 30]
             speed = eta = None
-            if len(samples) >= 3 and event.unit and event.state == "running":
+            if len(samples) >= 2 and event.unit and event.state == "running":
                 span = samples[-1][0] - samples[0][0]
-                if span > 0 and now - self.updated < 30:
+                if span > 0 and samples[-1][1] > samples[0][1] and now - self.updated < 30:
                     speed = (samples[-1][1] - samples[0][1]) / span
                     if event.total is not None:
                         eta = max(0, event.total - event.done) / speed
@@ -243,6 +246,12 @@ class RunProgress:
                         remaining.append(max(0, estimate - elapsed))
                 else:
                     remaining.append(estimate)
+            current_module = event.module
+            module_eta = None
+            if current_module and self.modules.get(current_module) == "running":
+                active = [m for m, state in self.modules.items() if state not in TERMINAL]
+                if current_module in active:
+                    module_eta = remaining[active.index(current_module)]
             total_eta = None if not remaining or None in remaining else sum(remaining)
             elapsed = now - self.started
             overall = min(0.999, elapsed / (elapsed + total_eta)) if total_eta is not None and elapsed + total_eta else None
@@ -252,7 +261,8 @@ class RunProgress:
                 overall = total_eta = eta = speed = None
             return dict(event=event, elapsed=elapsed, stage_elapsed=now - self.stage_started, stale=stale,
                         quiet_cpu=process_time() - self.reported_cpu,
-                        speed=speed, eta=eta, fraction=fraction, overall=overall, total_eta=total_eta,
+                        speed=speed, eta=eta, module_eta=module_eta if not self.terminal else None,
+                        fraction=fraction, overall=overall, total_eta=total_eta,
                         modules=dict(self.modules), terminal=self.terminal)
 
 

@@ -142,7 +142,7 @@ class TerminalPanel:
         progress = f"总进度 {min(99, int(overall * 100)) if overall < 1 else 100}%" if overall is not None else ""
         if modules:
             progress = " · ".join(filter(None, (progress, f"已结束 {finished}/{len(modules)} 个模块")))
-        eta = f"总剩余时间 {duration(snapshot['total_eta'])}"
+        eta = f"{event.module or '当前模块'}剩余时间 {duration(snapshot['module_eta'])}"
         task = ""
         if event.unit:
             scale = 2**20 if event.unit == "字节" else 1
@@ -155,15 +155,14 @@ class TerminalPanel:
             if snapshot["speed"] is not None:
                 rate_scale = 1 / scale if scale != 1 else 60
                 task += f" · {snapshot['speed'] * rate_scale:.1f} {unit}/{'秒' if scale != 1 else '分'}"
-            if snapshot["eta"] is not None and event.done < (event.total or 0):
-                task += f" · 预计剩余 {duration(snapshot['eta'])}"
         if snapshot["stale"] >= 30 and not terminal and event.state == "running":
             silence = f"距上次上报 {duration(snapshot['stale'])}"
             if event.module == "M6":
                 silence += f" · 此间主进程 CPU {snapshot['quiet_cpu']:.1f} 秒"
             task = " · ".join(filter(None, (task, silence)))
         final = LABELS.get(terminal, "")
-        lines = (final, stage, event.detail, progress, task, elapsed, eta)
+        file_line = f"{event.operation}  {event.path}" if event.path else ""
+        lines = (final, stage, event.detail, file_line, progress, task, elapsed, eta)
         if self.live is None:
             self.write(" · ".join(filter(None, lines)) + "\n")
             return
@@ -184,7 +183,7 @@ class TerminalPanel:
             return grid
 
         rows = [Text(alias, style="bright_cyan"), Text(stage, style="bold bright_white")]
-        for line in (final, event.detail, progress, task, elapsed, eta, resources):
+        for line in (final, event.detail, file_line, progress, task, elapsed, eta):
             if line:
                 rows.append(Text(line))
             if line and line == progress and overall is not None:
@@ -198,14 +197,14 @@ class TerminalPanel:
         overview = Group(*rows)
         width = self.live.console.width
         if view == "?":
-            body = Group(Text("1 总览    2 模块明细    ? 帮助"),
+            body = Group(Text("1 当前工作    2 模块总览    ? 帮助"),
                          Text("Ctrl+C 安全中断"), Text("估时使用近期速度和匹配的本机运行记录。"))
         elif view == "2":
-            body = Columns([states, overview], equal=True, expand=True) if width >= 100 else Group(states, overview)
+            body = Columns([overview, states], equal=True, expand=True) if width >= 100 else Group(overview, states)
         else:
-            body = Columns([overview, states], equal=True, expand=True) if width >= 100 and modules else overview
+            body = overview
         self.live.update(Panel(body, title="黄土高原 FD-WT", title_align="left", border_style="bright_blue",
-                               subtitle="1 总览 · 2 模块 · ? 帮助 · Ctrl+C 中断"), refresh=True)
+                               subtitle="1 当前工作 · 2 模块总览 · ? 帮助 · Ctrl+C 中断"), refresh=True)
 
 
 def terminal_restore(stream):
@@ -226,6 +225,74 @@ class WizardPanel:
         self.console = None
         self.navigation = False
         self.answers = {}
+        self.history = []
+        self.history_cursor = 0
+
+    def replay(self, prompt):
+        """返回上一题后重放已确认答案，恢复各题的上下文。"""
+        if self.history_cursor < len(self.history):
+            saved_prompt, value = self.history[self.history_cursor]
+            if saved_prompt == prompt:
+                self.history_cursor += 1
+                return True, value
+            del self.history[self.history_cursor:]
+        return False, None
+
+    def record(self, prompt, value):
+        if self.navigation:
+            del self.history[self.history_cursor:]
+            self.history.append((prompt, value))
+            self.history_cursor += 1
+        return value
+
+    def rewind(self):
+        if self.history_cursor:
+            del self.history[self.history_cursor - 1:]
+        self.history_cursor = 0
+
+    def show_question(self, section, prompt, details, rows, instruction, error=""):
+        """向导所有题目复用同一套标题、内容和快捷键布局。"""
+        text = self.text_type
+        body = [text(section, style="bold bright_magenta"), text(prompt, style="bold bright_white"), text()]
+        body.extend(text(line, style="bright_cyan") for line in details)
+        body.extend(rows)
+        if error:
+            body.extend((text(), text(f"请修正  {error}", style="bold bright_red")))
+        body.extend((text(), text(instruction, style="bright_yellow")))
+        self.console.clear()
+        self.console.print(self.panel_type(self.group_type(*body), title=text(self.title, style="bold bright_white"),
+            border_style="bright_blue", title_align="left", subtitle=text("Ctrl+B 退回 · Ctrl+Q 终止", style="dim")))
+
+    def read_text(self):
+        """Windows 终端直接处理快捷键，其余环境沿用标准输入。"""
+        if os.name == "nt" and sys.stdin is sys.__stdin__ and sys.stdin.isatty():
+            import msvcrt
+            chars = []
+            while True:
+                key = msvcrt.getwch()
+                if key in ("\x00", "\xe0"):
+                    msvcrt.getwch()
+                elif key == "\x02" and self.navigation:
+                    raise WizardBack
+                elif key in ("\x03", "\x11"):
+                    raise KeyboardInterrupt
+                elif key == "\r":
+                    sys.stderr.write("\n")
+                    return "".join(chars)
+                elif key == "\b":
+                    if chars:
+                        chars.pop()
+                        sys.stderr.write("\b \b")
+                elif key >= " ":
+                    chars.append(key)
+                    sys.stderr.write(key)
+                sys.stderr.flush()
+        if sys.stdin.isatty():
+            return input()
+        value = sys.stdin.readline()
+        if not value:
+            raise EOFError
+        return value
 
     def __enter__(self):
         if self.mode == "plain" or not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -249,6 +316,9 @@ class WizardPanel:
 
     def menu(self, prompt, options, default=None, *, section="运行设置", check=None, details=()):
         """显示编号菜单。每项包含内部值、中文标签和用途说明。"""
+        replayed, value = self.replay(prompt) if self.navigation else (False, None)
+        if replayed:
+            return value
         keys = {str(index): key for index, (key, _, _) in enumerate(options, 1)}
         labels = {key: label for key, label, _ in options}
         saved = self.answers.get(prompt) if self.navigation else None
@@ -263,11 +333,45 @@ class WizardPanel:
                 raise ValueError(f"请输入菜单编号 1–{len(options)}。")
             return check(key) if check else key
 
-        return self.ask(prompt, select, default_number, section=section, details=details,
-                        hint="输入编号后回车", rows=rows)
+        if self.console is not None and os.name == "nt" and sys.stdin.isatty():
+            import msvcrt
+            selected = int(default_number or 1) - 1
+            error = ""
+            while True:
+                text = self.text_type
+                body = []
+                for index, (_, label, description) in enumerate(options):
+                    mark = "❯" if index == selected else " "
+                    row = text(f" {mark} {label}", style="bold bright_cyan" if index == selected else "white")
+                    if description:
+                        row.append(f"  ·  {description}", style="dim")
+                    body.append(row)
+                self.show_question(section, prompt, details, body, "↑↓ 选择 · 回车确认", error)
+                key = msvcrt.getwch()
+                if key in ("\x00", "\xe0"):
+                    arrow = msvcrt.getwch()
+                    selected = (selected + (-1 if arrow == "H" else 1 if arrow == "P" else 0)) % len(options)
+                elif key in ("\x1b", "\x02") and self.navigation:
+                    raise WizardBack
+                elif key in ("\x03", "\x11"):
+                    raise KeyboardInterrupt
+                elif key == "\r":
+                    try:
+                        result = select(str(selected + 1))
+                        self.answers[prompt] = str(selected + 1)
+                        return self.record(prompt, result)
+                    except ValueError as failure:
+                        error = str(failure)
+        result = self.ask(prompt, select, default_number, section=section, details=details,
+                          hint="输入编号后回车", rows=rows, track=False)
+        return self.record(prompt, result)
 
-    def ask(self, prompt, check, default=None, *, details=(), section="运行设置", hint="", rows=()):
+    def ask(self, prompt, check, default=None, *, details=(), section="运行设置", hint="", rows=(), track=True):
         """显示当前题与详情，返回校验后的输入。校验失败时在同一题显示原因。"""
+        if track and self.navigation:
+            replayed, value = self.replay(prompt)
+            if replayed:
+                return value
         remember = self.navigation and not section.startswith("05")
         if remember:
             default = self.answers.get(prompt, default) if not rows else default
@@ -276,30 +380,21 @@ class WizardPanel:
         if default is not None:
             instruction += " · 直接回车使用默认值"
         if self.navigation:
-            instruction += " · 返回 / 帮助 / 退出"
+            instruction += " · Ctrl+B 退回 · Ctrl+Q 终止 · 返回 / 帮助 / 退出"
         error = ""
         while True:
             if self.console is not None:
                 text = self.text_type
-                body = [text(section, style="bold bright_magenta"), text(),
-                        text(prompt, style="bold bright_white")]
-                body.extend(text(line, style="bright_cyan") for line in details)
+                body = []
                 for number, label, description, is_default in rows:
                     row = text(f"  {number}  ", style="bold bright_cyan")
                     row.append(label, style="bold bright_white")
                     if is_default:
                         row.append("  默认", style="bold bright_green")
                     if description:
-                        row.append(f"  ·  {description}", style="white")
+                        row.append(f"  ·  {description}", style="dim")
                     body.append(row)
-                body.extend((text(), text(instruction, style="bright_yellow")))
-                if error:
-                    body.append(text(f"请修正  {error}", style="bold bright_red"))
-                self.console.clear()
-                self.console.print(self.panel_type(self.group_type(*body),
-                                                   title=text(self.title, style="bold bright_white"),
-                                                   border_style="bright_blue", title_align="left",
-                                                   subtitle=text("Ctrl+C 退出", style="dim")))
+                self.show_question(section, f"{prompt}{suffix}", details, body, instruction, error)
                 self.console.print(text("选择 > " if rows else "输入 > ", style="bold bright_cyan"), end="")
             else:
                 options = tuple(f"  {number}. {label} · {description}" for number, label, description, _ in rows)
@@ -308,18 +403,13 @@ class WizardPanel:
                 end = "" if sys.stdin.isatty() else "\n"
                 sys.stderr.write(f"{message}\n请输入：{end}")
                 sys.stderr.flush()
-            if sys.stdin.isatty():
-                value = input()
-            else:
-                value = sys.stdin.readline()
-                if not value:
-                    raise EOFError
+            value = self.read_text()
             try:
                 value = value.strip() or default
                 if self.navigation:
-                    if value == "返回":
+                    if value in ("返回", "\x02"):
                         raise WizardBack
-                    if value == "退出":
+                    if value in ("退出", "\x11"):
                         raise KeyboardInterrupt
                     if value == "帮助":
                         error = "输入编号或题目要求的内容。返回可修改上一组，退出结束向导。"
@@ -327,7 +417,7 @@ class WizardPanel:
                 result = check(value)
                 if remember:
                     self.answers[prompt] = value
-                return result
+                return self.record(prompt, result) if track else result
             except ValueError as failure:
                 error = str(failure)
 

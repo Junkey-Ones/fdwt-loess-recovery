@@ -51,14 +51,14 @@ def prepare_support(records, grid, params, variant):
             if mode == "fixed_season":
                 first, last = phenology["fixed_months"]
                 segments = [(date(year, first, 1), date(year, last+1, 1)-timedelta(days=1))]
+            elif len(valid) < phenology["valid_years_min"]:
+                segments = []
             elif year in valid:
                 segments = valid[year]
-            elif len(valid) >= phenology["valid_years_min"]:
+            else:
                 segments = [(origin+timedelta(days=median_low(a for a, _ in offsets)),
                              origin+timedelta(days=median_low(b for _, b in offsets)))]
                 fallback = True
-            else:
-                segments = []
             windows[year] = segments, fallback
             annual.append(dict(common, year=year, phenology_mode=mode, valid_phenology_years=len(valid),
                                phenology_fallback=fallback, num_cycles=len(segments),

@@ -161,6 +161,11 @@ deep:
   - 200
   summary: mean
 route1:
+  supplements: [fz, dfai]
+  e1a:
+    terms: [intercept, year]
+    dispersion_bounds: [0.000001, 1000.0]
+    support: complete_active_window
   deep_marginal_quantiles: [0.25, 0.50, 0.75]
   recovery_risk_t0: t_min
   recovery_risk_h: 12
@@ -170,6 +175,8 @@ route1:
   - administrative
   - missing
   ipcw: sensitivity
+  q1_censor_sensitivities: [complete_followup, active_window]
+  model_sensitivities: [nonforest, q2_mean, common_sample, one_per_exposure, inverse_exposure, short, long, complete_followup, active_window, block_50km, block_200km, year_factor, reduced_soil_terrain, q3_continuous]
 route2:
   t0: t_s
   h: 12
@@ -187,6 +194,18 @@ route2:
   multi_min_blocks: 20
   max_b_share_per_block: 0.2
 infer:
+  target_power: 0.80
+  year_score_calibration:
+    replications: 400
+    spatial_clusters: 89
+    year_clusters: 21
+    observations_per_cell: 20
+    intercept: -2.0
+    scenarios:
+      year_only: {space_sd: 0.0, year_sd: 0.35}
+      crossed: {space_sd: 0.35, year_sd: 0.35}
+      space_only: {space_sd: 0.35, year_sd: 0.0}
+  year_score_bootstrap: {repetitions: 500, weights: rademacher, min_clusters: 10}
   epv_min: 10
   min_n: 30
   min_event_per_arm: 10
@@ -215,16 +234,22 @@ equivalence:
   - 1.2
   cont_sd: 0.1
 psm:
+  output_scope: conditional_matched_association
   high_quantile: 0.75
   low_quantile: 0.25
   estimand: ATT_high
   caliper: 0.05
   max_abs_smd: 0.1
+  common_support_refit_max: 1
 gam:
   max_edf: 3
+  min_reference_n_eff: 50
+  min_fit_n_eff: 100
 spec_curve:
   r_robust: 0.8
 sensitivity:
+  reduced_soil_terrain_drop: [sand_0_30, slope_deg]
+  block_km: {block_50km: 50, block_200km: 200}
   followup: {short: 6, long: 18}
   fr_window: [t_e-2, t_e+2]
   lai: {short: 3, long: 10, relaxed_valid_years: 4}

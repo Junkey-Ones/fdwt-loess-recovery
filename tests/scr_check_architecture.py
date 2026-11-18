@@ -135,14 +135,14 @@ def test_wizard_back_help_and_direct_edit(monkeypatch, capsys):
     """返回上一步、查看帮助和在确认页编辑时保留答案。"""
     from workflow.run_module import wizard
 
-    answers = ("1\n帮助\n返回\n\n2026-11-11_向导验收\n\n\n3\n2\n5\n\n1\n1\n")
+    answers = ("1\n帮助\n返回\n\n2026-11-11_向导验收\n\n\n1\n5\n\n1\n1\n")
     monkeypatch.setattr(terminal_panel.sys, "stdin", StringIO(answers))
     with terminal_panel.WizardPanel("测试", "plain") as panel:
         result = wizard(Namespace(config_path=DEFAULT_CONFIG), panel)
     captured = capsys.readouterr()
     assert captured.out == "" and "返回可修改上一组" in captured.err
     assert result.modules == ["route1"] and result.run_alias == "2026-11-11_向导验收"
-    assert result.runtime == {"profile": "auto"} and result.progress == "plain" and result.dry_run
+    assert result.runtime == {"profile": "auto"} and result.progress == "auto" and result.dry_run
 
 
 @pytest.mark.parametrize("width", [55, 120])
@@ -249,3 +249,101 @@ def test_wizard_rich_restores_screen_on_interrupt(monkeypatch):
     assert "运行范围" in output
     assert "\x1b[?1049h" in output and "\x1b[?1049l" in output
     assert restored == [True]
+
+
+def test_progress_file_and_early_estimate():
+    """文件路径和操作准确呈现，两次有增量采样即可估时。"""
+    from workflow.progress import RunProgress, emit
+    now = [0]
+    meter = RunProgress(clock=lambda: now[0])
+    emit(meter, "M3", "读取瓦片", done=1, total=10, unit="文件", operation="读取", path="data/a.nc")
+    now[0] = 5
+    emit(meter, "M3", "读取瓦片", done=3, total=10, unit="文件", operation="读取", path="data/b.nc")
+    snapshot = meter.snapshot()
+    assert snapshot["eta"] == 17.5
+    output = StringIO()
+    terminal_panel.TerminalPanel(output, False).draw_run("测试", snapshot, "", "1")
+    assert "读取  data/b.nc" in output.getvalue()
+
+
+def test_plain_file_change_emits_without_stage_change():
+    """同阶段切换文件也即时通知纯文本输出。"""
+    from workflow.progress import RunProgress, emit
+    meter = RunProgress()
+    snapshots = []
+    meter.on_stage_change = lambda: snapshots.append(meter.snapshot()["event"].path)
+    emit(meter, "M3", "读取", operation="读取", path="a.parquet")
+    emit(meter, "M3", "读取", operation="读取", path="b.parquet")
+    assert snapshots == ["a.parquet", "b.parquet"]
+
+
+def test_back_returns_to_previous_question_within_group(monkeypatch):
+    """从方案选择退回产品选择，而不是跳出整组。"""
+    from workflow.run_module import wizard
+    answers = "1\n2026-11-11_向导退回\n1\n返回\n2\n1\n1\n1\n"
+    monkeypatch.setattr(terminal_panel.sys, "stdin", StringIO(answers))
+    with terminal_panel.WizardPanel("测试", "plain") as panel:
+        result = wizard(Namespace(config_path=DEFAULT_CONFIG), panel)
+    assert result.product_combo == "gldas21__gldas21"
+
+
+def test_default_hides_modules_and_shows_only_module_eta():
+    """默认视图隐藏模块清单，模块剩余仅依据当前模块历史。"""
+    from types import SimpleNamespace
+    from workflow.progress import ProgressEvent, RunProgress
+    now = [0]
+    meter = RunProgress(clock=lambda: now[0])
+    meter.configure(["M0", "M1", "M2"], {"M1": 50, "M2": 200})
+    meter.event(ProgressEvent("M0", "冻结", state="reused"))
+    meter.event(ProgressEvent("M1", "计算"))
+    now[0] = 10
+    snapshot = meter.snapshot()
+    assert snapshot["module_eta"] == 40 and snapshot["total_eta"] == 240
+    output = StringIO()
+    console, backend = terminal_panel.rich_console(output)
+    console.width = 120
+    panel = terminal_panel.TerminalPanel(output, False)
+    panel.backend = backend
+    panel.live = SimpleNamespace(console=console, update=lambda body, **_: console.print(body))
+    panel.draw_run("测试", snapshot, "", "1")
+    text = output.getvalue()
+    assert "M1剩余时间 40 秒" in text and "总剩余时间" not in text and "M0  已复用" not in text
+    panel.draw_run("测试", snapshot, "", "2")
+    assert "M0  已复用" in output.getvalue()
+    now[0] = 60
+    assert meter.snapshot()["module_eta"] is None
+
+
+def test_navigation_shortcuts_in_plain_mode(monkeypatch):
+    """重定向输入也可解析控制字符；不会写入标准输出。"""
+    monkeypatch.setattr(terminal_panel.sys, "stdin", StringIO("\x02\n\x11\n"))
+    with terminal_panel.WizardPanel("测试", "plain") as panel:
+        panel.navigation = True
+        with pytest.raises(terminal_panel.WizardBack):
+            panel.ask("运行别名", str)
+        with pytest.raises(KeyboardInterrupt):
+            panel.ask("运行别名", str)
+
+
+@pytest.mark.parametrize("key, exception", [("\x02", terminal_panel.WizardBack), ("\x11", KeyboardInterrupt)])
+def test_windows_menu_shortcuts(monkeypatch, key, exception):
+    """菜单以同一快捷键退回或终止。"""
+    import msvcrt
+    from types import SimpleNamespace
+    class TerminalInput(StringIO):
+        def isatty(self):
+            return True
+    output = StringIO()
+    console, backend = terminal_panel.rich_console(output)
+    monkeypatch.setattr(terminal_panel.sys, "stdin", TerminalInput())
+    monkeypatch.setattr(msvcrt, "getwch", lambda: key)
+    with terminal_panel.WizardPanel("测试", "plain") as panel:
+        panel.navigation = True
+        panel.console = console
+        from importlib import import_module
+        panel.panel_type = import_module(f"{backend}.panel").Panel
+        panel.text_type = import_module(f"{backend}.text").Text
+        panel.group_type = import_module(f"{backend}.console").Group
+        with pytest.raises(exception):
+            panel.menu("选择", (("a", "选项", "说明"),), "a")
+    assert "Ctrl+B" in output.getvalue() and "Ctrl+Q" in output.getvalue()

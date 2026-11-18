@@ -2,6 +2,22 @@ protocol_version: v1.3.1
 freeze_status: frozen
 combination_policy: one_family_at_a_time
 reference: main
+m7_supplements: [fz, dfai]
+m7_model_sensitivities:
+  - nonforest
+  - q3_continuous
+  - year_factor
+  - reduced_soil_terrain
+  - block_50km
+  - block_200km
+  - q2_mean
+  - common_sample
+  - one_per_exposure
+  - inverse_exposure
+  - short
+  - long
+  - complete_followup
+  - active_window
 estimands:
   recovery_distribution:
     families:
@@ -331,15 +347,15 @@ families:
   - alpha_20
   - alpha_41
 selectable_variants:
-- main
 - lai_four_of_five
+- main
 - fixed_season
 variant_labels:
   main:
-    label: 5/5年严格方案（主分析）
+    label: 5/5年严格方案（原预设主分析）
     description: 动态物候；事件前五年全部有效；年度时间与空间覆盖均至少70%
   lai_four_of_five:
-    label: 4/5年方案（预设敏感性）
+    label: 4/5年方案（Q3修订主分析）
     description: 同一五年窗至少四年有效；按实际年份计算趋势；覆盖和QC不变
   fixed_season:
     label: 固定季节方案（5/5年）

@@ -166,7 +166,7 @@ def mk_p_value(score, variance):
     return erfc((abs(score) - 1) / sqrt(2 * variance)) if variance > 0 else None
 
 
-def trend_estimates(annual, params, *, minimum_years=None):
+def trend_estimates(annual, params, *, minimum_years=None, metrics=("RT", "delta_SMP", "RR")):
     """估计 Sen 斜率，按 Ljung–Box 决定主检验并保留 Hamed–Rao 敏感性。"""
     settings = params["trend"]
     annual = tuple(annual)
@@ -177,7 +177,7 @@ def trend_estimates(annual, params, *, minimum_years=None):
         raise ValueError("趋势自相关触发规则须为 lag-1 Ljung–Box 概率阈值。")
     cutoff = float(cutoff)
     result = []
-    for metric in ("RT", "delta_SMP", "RR"):
+    for metric in metrics:
         points = sorted((row["year"], row[metric]) for row in annual if row[metric] is not None)
         n = len(points)
         row = dict(metric=metric, n_years=n, status="insufficient_years", sen_slope=None,

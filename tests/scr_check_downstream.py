@@ -140,7 +140,11 @@ def test_m7_reads_nonempty_grid_handoffs(tmp_path, params):
     }.items():
         tables[name] = tmp_path / f"{name}.parquet"
         pq.write_table(pa.Table.from_pylist(records), tables[name])
-    outputs, status, details = compute_module("M7", tables, {}, params, {}, {})
+    matrix = load_config(DEFAULT_CONFIG.parent / "specification_matrix.yaml")
+    # 本测试的合成格点无坐标；空间投影由独立测试验证。
+    params["route1"]["model_sensitivities"] = [v for v in params["route1"]["model_sensitivities"]
+                                               if v not in params["sensitivity"]["block_km"]]
+    outputs, status, details = compute_module("M7", tables, {}, params, {}, matrix)
     assert status == "descriptive_only"
     assert any(row["recovery_event"] for row in outputs["route1_recovery_person_pentad"])
     assert details["model_candidate_samples"]["q2_fr"]["n_event"] == 1

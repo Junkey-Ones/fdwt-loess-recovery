@@ -95,7 +95,7 @@ def link_exposures(events, rows, vegetation, covariates, params, *, include_audi
                            year=year, window_start_year=year-width, window_end_year=year-1, window_years=width,
                            LAI_base=mean(value for _, value in lai) if accepted else None,
                            LAI_trend=sen_slope(lai) if accepted else None, LAI_n_valid_years=len(lai),
-                           LAI_required_valid_years=required, LAI_window_eligible=accepted,
+                           LAI_in_exposure_period=eligible, LAI_required_valid_years=required, LAI_window_eligible=accepted,
                            LAI_valid_years=json.dumps([y for y, _ in lai]),
                            LAI_valid_year_span=lai[-1][0]-lai[0][0] if lai else None,
                            LAI_full_window=full, LAI_exposure_cluster=cluster,

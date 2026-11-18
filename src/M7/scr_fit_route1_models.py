@@ -15,6 +15,7 @@ import json
 import numpy as np
 
 from src.M7.scr_fit_recovery_risk import fit_grouped_cloglog, natural_spline
+from src.M7.scr_fit_median import fit_weighted_median
 from src.M7.scr_route1_summary import holm
 from src.M7.scr_spatial_inference import bootstrap_method, resampling_label, resampling_scheme
 
@@ -34,27 +35,14 @@ def fit_coefficients(x, y, w, family):
         return fit_grouped_cloglog(x, w, w*y)
     if family == "logit":
         return fit_binomial_logit(x, y, w)
-    # 中位数回归以逐步收紧的绝对损失近似求解，缩放仅用于数值稳定。
-    center, scale = np.median(y), np.std(y)
-    if not scale:
-        return None, "constant_outcome"
-    target = (y-center)/scale
-    root_weights = np.sqrt(w)
-    beta = np.linalg.lstsq(x*root_weights[:, None], target*root_weights, rcond=None)[0]
-    for epsilon in (1e-2, 1e-4, 1e-6, 1e-8):
-        for _ in range(500):
-            residual = target - x @ beta
-            weights = np.sqrt(w / np.maximum(abs(residual), epsilon))
-            candidate = np.linalg.lstsq(x*weights[:, None], target*weights, rcond=None)[0]
-            change = np.max(abs(candidate-beta))
-            beta = candidate
-            if change <= max(1e-8, epsilon*0.01):
-                break
-        else:
-            return None, "nonconverged"
-    beta *= scale
-    beta[0] += center
-    return beta, "fitted"
+    if family == "mean":
+        root = np.sqrt(w)
+        beta = np.linalg.lstsq(x*root[:, None], y*root, rcond=None)[0]
+        return (beta, "fitted") if np.isfinite(beta).all() else (None, "nonfinite")
+    if family != "median":
+        raise ValueError(f"未登记的回归族：{family}")
+    beta, status, _ = fit_weighted_median(x, y, w)
+    return beta, status
 
 
 def fit_binomial_logit(x, y, w):
@@ -73,7 +61,7 @@ def fit_binomial_logit(x, y, w):
         p = logistic(eta)
         info = x.T @ (x*(w*p*(1-p))[:, None])
         if np.linalg.matrix_rank(info) < x.shape[1]:
-            return None, "rank_deficient"
+            return None, "singular_information_possible_separation"
         score = x.T @ (w*(y-p))
         direction = np.linalg.solve(info, score)
         baseline = likelihood(eta)
@@ -96,10 +84,10 @@ def design_matrix(rows, terms, core):
     """按事件等权标准化连续变量，以固定地类作参照。"""
     names, columns, scales = ["intercept"], [np.ones(len(rows))], {}
     for name in [*terms, *core]:
-        if name == "land_cover":
+        if name in ("land_cover", "year_factor"):
             levels = sorted({row[name] for row in rows})
             for level in levels[1:]:
-                names.append(f"land_cover[{level}]")
+                names.append(f"{name}[{level}]")
                 columns.append(np.array([row[name] == level for row in rows], dtype=float))
             continue
         values = np.array([row[name] for row in rows], dtype=float)
@@ -119,7 +107,7 @@ def design_matrix(rows, terms, core):
     return names, np.column_stack(columns), scales
 
 
-def dependence(rows, design, outcome, beta, family, blocks):
+def dependence(rows, design, outcome, beta, family, blocks, weights=None):
     """以空间和年份的交叉聚类得分估计协方差。"""
     eta = design @ beta
     if family == "logit":
@@ -129,6 +117,8 @@ def dependence(rows, design, outcome, beta, family, blocks):
         mu = np.exp(np.clip(eta, -25, 25))
         p = -np.expm1(-mu)
         score, information = (outcome-p)*mu/p, mu**2*np.exp(-mu)/p
+    elif family == "mean":
+        score, information = outcome-eta, np.ones(len(outcome))
     else:
         residual = outcome-eta
         spread = min(np.std(residual, ddof=1), np.subtract(*np.quantile(residual, [.75, .25]))/1.349)
@@ -137,6 +127,8 @@ def dependence(rows, design, outcome, beta, family, blocks):
             return None
         score = 0.5-(residual < 0)
         information = np.exp(-0.5*(residual/bandwidth)**2)/(sqrt(2*np.pi)*bandwidth)
+    if weights is not None:
+        score, information = score*weights, information*weights
     bread = design.T @ (design*information[:, None])
     if np.linalg.matrix_rank(bread) < len(beta):
         return None
@@ -155,7 +147,7 @@ def dependence(rows, design, outcome, beta, family, blocks):
     return inverse @ (meats[0]+meats[1]-meats[2]) @ inverse
 
 
-def margins(names, x, beta, family, time, deep_levels):
+def margins(names, x, beta, family, time, deep_levels, weights=None):
     """计算 LAI 相差一个样本标准差时的平均预测和差值。"""
     lai = names.index("LAI_trend")
     deep = names.index("deep_SM_pre4_percentile")
@@ -170,9 +162,9 @@ def margins(names, x, beta, family, time, deep_levels):
             if family == "cloglog":
                 baseline = time @ beta[x.shape[1]:]
                 cumulative = np.exp(np.clip(eta, -50, 50))*np.exp(baseline).sum()
-                predictions.append(float(np.mean(-np.expm1(-cumulative))))
+                predictions.append(float(np.average(-np.expm1(-cumulative), weights=weights)))
             else:
-                predictions.append(float(logistic(eta).mean()))
+                predictions.append(float(np.average(eta if family in ("median", "mean") else logistic(eta), weights=weights)))
         output.append([*predictions, predictions[1]-predictions[0]])
     return np.array(output)
 
@@ -273,7 +265,8 @@ def lag_intervals(events, lag_summary, blocks, superblocks, params):
         summary["ci_low"], summary["ci_high"] = map(float, np.quantile(draws, [alpha/2, 1-alpha/2]))
 
 
-def fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity, report=None):
+def fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity, report=None,
+                      *, selection=None, exploratory=False, sample_mode="event"):
     """拟合冻结的 Q2／Q3 主模型，保留门槛、区间和家族检验。"""
     by_id = {row["episode_id"]: row for row in exposures}
     histories = defaultdict(list)
@@ -282,12 +275,17 @@ def fit_route1_models(events, exposures, risk, blocks, superblocks, params, iden
             histories[row["episode_id"]].append(row)
     core = params["covariates"]["core"]
     rows = [{**event, **by_id[event["episode_id"]]} for event in events]
+    if "year_factor" in core:
+        rows = [dict(row, year_factor=row["year"]) for row in rows]
     fr = [row for row in rows if row["route1_FR_eligible"] and row["F_R"] is not None]
     contrast = [dict(row, fr_pre_sync=int(row["F_R"])) for row in fr
                 if not row["F_R"] or row["F_R_subtype"] in ("pre", "sync")]
     models = [("q2_fr", "Q2", "logit", "F_R", [], fr, None),
               *[(f"q2_{outcome}", "Q2", "median", outcome, ["fr_pre_sync"], contrast,
                  f"fr_pre_sync_{outcome.lower()}_contrast") for outcome in ("RR", "delta_SMP")]]
+    if selection == "q2_mean":
+        models = [(f"q2_{outcome}_mean", "Q2", "mean", outcome, ["fr_pre_sync"], contrast, None)
+                  for outcome in ("RR", "delta_SMP")]
     for domain, family, outcome, sample in (("recovery_risk", "cloglog", "recovery_event", rows),
                                              ("fr", "logit", "F_R", fr)):
         for model, terms in (("L", ["LAI_trend", "LAI_base"]), ("D", ["deep_SM_pre4_percentile"]),
@@ -295,23 +293,47 @@ def fit_route1_models(events, exposures, risk, blocks, superblocks, params, iden
             test = {"L": f"lai_trend_{domain}", "I": f"lai_trend_deep_{domain}"}.get(model)
             models.append((f"q3_{domain}_{model}", "Q3", family, outcome, terms,
                            [row for row in sample if row[f"exposure_complete_{model}"]], test))
-    manifests, coefficients, marginal, uncertainty = [], [], [], []
+    if selection == "q3_continuous":
+        models = [(f"q3_{outcome}_{model}", "Q3", "median", outcome, terms,
+                   [r for r in rows if r["route1_A_eligible"] and r[f"exposure_complete_{model}"]], None)
+                  for outcome in ("RR", "delta_SMP")
+                  for model, terms in (("L", ["LAI_trend", "LAI_base"]), ("D", ["deep_SM_pre4_percentile"]),
+                                       ("I", ["LAI_trend", "LAI_base", "deep_SM_pre4_percentile"]))]
+    manifests, coefficients, marginal, uncertainty, year_sensitivity = [], [], [], [], []
     for spec in models:
+        if selection == "q2_mean" and spec[1] != "Q2":
+            continue
+        if selection == "q3" and spec[1] != "Q3":
+            continue
+        if selection == "q3_lai" and (spec[1] != "Q3" or spec[0].endswith("_D")):
+            continue
+        if selection == "fr_only" and not (spec[2] == "logit" and spec[3] == "F_R"):
+            continue
+        if selection == "q3_recovery" and not spec[0].startswith("q3_recovery_"):
+            continue
+        if exploratory:
+            spec = (*spec[:-1], None)
         if report:
             report("拟合预设模型", spec[0])
         fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
-                      manifests, coefficients, marginal, uncertainty, report=report)
+                      manifests, coefficients, marginal, uncertainty, report=report,
+                      year_sensitivity=year_sensitivity, sample_mode=sample_mode)
+    if exploratory:
+        for row in manifests:
+            if row["inference_level"] == "formal":
+                row["inference_level"] = "sensitivity_interval"
     for family, tests in params["multiple_testing"]["families"].items():
         lookup = {row["test_id"]: row for row in coefficients if row.get("test_family") == family}
         for test, p in zip(tests, holm([lookup.get(test, {}).get("p_raw") for test in tests])):
             if test in lookup:
                 lookup[test]["p_holm"] = p
     return {"model_fit_manifest": manifests, "model_result": coefficients, "model_marginal": marginal,
-            "route1_model_uncertainty": uncertainty}
+            "route1_model_uncertainty": uncertainty, "route1_year_wild_sensitivity": year_sensitivity}
 
 
 def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
-                  manifests, coefficients, marginal, uncertainty, report=None):
+                  manifests, coefficients, marginal, uncertainty, report=None, year_sensitivity=None,
+                  sample_mode="event"):
     """执行单个预设模型及其两个依赖性区间。"""
     analysis, question, family, outcome, terms, candidates, test = spec
     rows = [row for row in candidates if blocks.get(row["grid_id"]) is not None
@@ -320,6 +342,19 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
                     for key in [*terms, *core])
             and (bool(histories.get(row["episode_id"])) if family == "cloglog"
                  else row.get(outcome) is not None and np.isfinite(row[outcome]))]
+    if sample_mode == "common_sample":
+        rows = [r for r in rows if all(r.get(f"exposure_complete_{m}") for m in ("L", "D", "I"))]
+    if sample_mode == "one_per_exposure":
+        groups = defaultdict(list)
+        for row in rows:
+            groups[row["LAI_exposure_cluster"]].append(row)
+        if None in groups:
+            raise ValueError("暴露簇抽样缺少格点×年份标签。")
+        rng = np.random.default_rng(params["random"]["seed"])
+        rows = [ordered[int(rng.integers(len(ordered)))] for key in sorted(groups)
+                for ordered in [sorted(groups[key], key=lambda r: r["episode_id"])]]
+    if sample_mode not in ("event", "common_sample", "one_per_exposure", "inverse_exposure"):
+        raise ValueError(f"未登记的事件抽样模式：{sample_mode}")
     labels = [blocks[row["grid_id"]] for row in rows]
     spatial = [resampling_label(block, superblocks, params) for block in labels]
     lai_clusters = [row["LAI_exposure_cluster"] for row in rows] if "LAI_trend" in terms else []
@@ -341,7 +376,7 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
                   cluster_size_max=max(cluster_sizes, default=None),
                   max_cluster_share=max(cluster_sizes)/n if cluster_sizes else None,
                   sample_start_year=min(years, default=None), sample_end_year=max(years, default=None),
-                  link_function=family if family != "median" else "identity",
+                  link_function=family if family not in ("median", "mean") else "identity",
                   convergence_status="not_attempted", support_gate="insufficient_support",
                   inference_level="descriptive_only", random_seed_id=params["random"]["seed_id"],
                   run_id=identity.get("run_id"), code_hash=identity.get("code_hash"))
@@ -369,17 +404,21 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
         if len(values) != 1:
             raise ValueError(f"路线一单模型混合多个 {key}：{analysis}")
         status[key] = values.pop()
-    if family == "cloglog":
+    continuous_exposure = family in ("median", "mean") and "fr_pre_sync" not in terms
+    if continuous_exposure:
+        arms = [True]*n
+    elif family == "cloglog":
         arms = [any(r["recovery_event"] for r in histories[row["episode_id"]]) for row in rows]
     else:
-        arms = [bool(row["fr_pre_sync" if family == "median" else outcome]) for row in rows]
+        arms = [bool(row["fr_pre_sync" if family in ("median", "mean") else outcome]) for row in rows]
     positive = sum(arms)
     n_eff = min(n, effective_count(spatial), effective_count(lai_clusters) if lai_clusters else n)
-    status.update(n_outcome=positive, n_nonoutcome=n-positive, n_eff=float(n_eff))
+    status.update(n_outcome=None if continuous_exposure else positive,
+                  n_nonoutcome=None if continuous_exposure else n-positive, n_eff=float(n_eff))
     settings = params["infer"]
     if (n < settings["min_n"] or n_eff < settings["min_n_eff"] or
             len(set(spatial)) < settings["min_blocks"] or
-            min(positive, n-positive) < settings["min_event_per_arm"]):
+            (not continuous_exposure and min(positive, n-positive) < settings["min_event_per_arm"])):
         return
     names, x, scales = design_matrix(rows, terms, core)
     if x is None:
@@ -399,8 +438,11 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
         event_index = np.arange(n)
         design = x
         y = np.array([row[outcome] for row in rows], dtype=float)
+    status["outcome_sd"] = float(np.std(y, ddof=1)) if family in ("median", "mean") else None
 
     def epv(width):
+        if continuous_exposure:
+            return min(n, len(set(lai_clusters)) if lai_clusters else n)/width
         events_per_term = min(positive, n-positive)/width
         if lai_clusters:
             sizes = Counter(lai_clusters)
@@ -415,29 +457,45 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
         time, design = time[:, :1], design[:, :x.shape[1]+1]
         width = design.shape[1]
     epv_conservative = epv(width)
-    status.update(epv=min(positive, n-positive)/width, conservative_epv=epv_conservative)
-    if family != "median" and epv_conservative < settings["epv_min"]:
+    status.update(epv=n/width if continuous_exposure else min(positive, n-positive)/width,
+                  conservative_epv=epv_conservative)
+    if family not in ("median", "mean") and epv_conservative < settings["epv_min"]:
         return
     names += [f"time_{i+1}" for i in range(width-x.shape[1])]
     status.update(formula=f"{outcome} ~ " + " + ".join(names), support_gate="passed")
-    beta, fit_status = fit_coefficients(design, y, np.ones(len(y)), family)
-    status.update(convergence_status=fit_status, separation_flag=fit_status == "possible_separation")
+    event_weights = np.ones(n)
+    if sample_mode == "inverse_exposure":
+        groups = Counter(r["LAI_exposure_cluster"] for r in rows)
+        if None in groups:
+            raise ValueError("逆簇大小加权缺少格点×年份标签。")
+        event_weights = np.array([1/groups[r["LAI_exposure_cluster"]] for r in rows])
+    observation_weights = event_weights[event_index]
+    status["weight_kish"] = float(event_weights.sum()**2/np.sum(event_weights**2))
+    beta, fit_status = fit_coefficients(design, y, observation_weights, family)
+    status.update(convergence_status=fit_status, separation_flag=fit_status in (
+        "possible_separation", "singular_information_possible_separation"))
     if beta is None:
         return
     status["inference_level"] = "point_estimate"
     spatial_ids = {name: i for i, name in enumerate(sorted(set(spatial)))}
     codes = np.array([spatial_ids[name] for name in spatial])
     model_rows = [rows[i] for i in event_index]
-    covariance = dependence(model_rows, design, y, beta, family, [labels[i] for i in event_index])
+    if year_sensitivity is not None:
+        from src.M7.scr_year_sensitivity import coefficient_year_sensitivity
+        year_sensitivity.extend(coefficient_year_sensitivity(analysis,names,design,y,beta,family,
+            [r["year"] for r in model_rows],params,weights=observation_weights))
+    covariance = dependence(model_rows, design, y, beta, family, [labels[i] for i in event_index],
+                            weights=observation_weights)
     alpha = params["multiple_testing"]["family_alpha"]
     quantiles = params["route1"]["deep_marginal_quantiles"]
     deep = np.quantile(x[:, names.index("deep_SM_pre4_percentile")], quantiles) if analysis.endswith("_I") else []
     marginal_identified = time is None or max(step) == horizon
     use_margins = len(deep) > 0 and marginal_identified
-    predicted = margins(names, x, beta, family, time, deep) if use_margins else None
+    predicted = margins(names, x, beta, family, time, deep, event_weights) if use_margins else None
     rng = np.random.default_rng(params["random"]["seed"])
     draws, margin_draws = [], []
     repetitions = params["block"]["bootstrap_n"]
+    all_covers = {row.get("land_cover") for row in rows}
     failures = Counter()
     for repetition in range(repetitions):
         if report and repetition % 10 == 0:
@@ -445,12 +503,15 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
                    done=repetition, total=repetitions, unit="次")
         sampled = rng.integers(len(spatial_ids), size=len(spatial_ids))
         weights = np.bincount(sampled, minlength=len(spatial_ids))[codes]
-        draw, reason = fit_coefficients(design, y, weights[event_index], family)
+        draw, reason = fit_coefficients(design, y, weights[event_index]*observation_weights, family)
         if draw is not None:
             draws.append(draw)
             if use_margins:
-                margin_draws.append(margins(names, x, draw, family, time, deep))
+                margin_draws.append(margins(names, x, draw, family, time, deep, event_weights))
         else:
+            if reason == "rank_deficient":
+                covers = {row.get("land_cover") for row, weight in zip(rows, weights) if weight}
+                reason = "missing_land_cover" if len(covers) < len(all_covers) else "rank_deficient"
             failures[reason] += 1
     if report:
         report("空间块自举", f"{analysis} · 成功{len(draws)}次 · 失败{sum(failures.values())}次",
@@ -480,7 +541,7 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
         if output is None:
             output = dict(analysis_id=analysis, term=name)
             coefficients.append(output)
-        output.update(scale="link" if family != "median" else "original", estimate=value,
+        output.update(scale="original" if family in ("median", "mean") else "link", estimate=value,
                       std_error=float(se) if se is not None else None, ci_low=combined[0], ci_high=combined[1],
                       ci_method="union" if combined[0] is not None else None,
                       p_raw=p if name == term and test else None,
@@ -492,7 +553,7 @@ def fit_one_model(spec, histories, core, blocks, superblocks, params, identity,
         status["inference_level"] = "formal"
     if use_margins:
         write_margins(analysis, names, x, beta, family, time, deep, quantiles, scales, covariance,
-                      predicted, margin_draws, alpha, marginal, uncertainty, bootstrap_method(params))
+                      predicted, margin_draws, alpha, marginal, uncertainty, bootstrap_method(params), event_weights)
 
 
 def interval_rows(analysis, term, quantity, boot, clustered, method="superblock_bootstrap"):
@@ -503,19 +564,21 @@ def interval_rows(analysis, term, quantity, boot, clustered, method="superblock_
 
 
 def write_margins(analysis, names, x, beta, family, time, deep, quantiles, scales, covariance,
-                  predicted, draws, alpha, marginal, uncertainty, method="superblock_bootstrap"):
+                  predicted, draws, alpha, marginal, uncertainty, method="superblock_bootstrap", weights=None):
     """输出两个 LAI 水平的概率、差值及两种区间。"""
     gradient = None
     if covariance is not None:
         step = 1e-5
-        gradient = np.stack([(margins(names, x, beta+delta, family, time, deep) -
-                              margins(names, x, beta-delta, family, time, deep))/(2*step)
+        gradient = np.stack([(margins(names, x, beta+delta, family, time, deep, weights) -
+                              margins(names, x, beta-delta, family, time, deep, weights))/(2*step)
                              for delta in np.eye(len(beta))*step], axis=-1)
     mean, sd = scales["deep_SM_pre4_percentile"]
     for i, (level, quantile) in enumerate(zip(deep, quantiles)):
         reference = f"P{quantile*100:g}"
         combined = []
-        for j, quantity in enumerate(("probability_lai_mean", "probability_lai_plus_1sd", "probability_difference")):
+        quantities = (("response_lai_mean", "response_lai_plus_1sd", "response_difference") if family in ("median", "mean") else
+                      ("probability_lai_mean", "probability_lai_plus_1sd", "probability_difference"))
+        for j, quantity in enumerate(quantities):
             se = None
             if gradient is not None:
                 g = gradient[i, j]
@@ -530,11 +593,14 @@ def write_margins(analysis, names, x, beta, family, time, deep, quantiles, scale
             marginal.append(dict(analysis_id=analysis, term="LAI_trend", deep_reference=reference,
                                  deep_reference_value=float(mean+sd*level), LAI_reference=label,
                                  LAI_reference_value=float(scales["LAI_trend"][0]+j*scales["LAI_trend"][1]),
-                                 predicted_probability=float(predicted[i, j]),
+                                 predicted_probability=float(predicted[i, j]) if family not in ("median", "mean") else None,
+                                 predicted_response=float(predicted[i, j]) if family in ("median", "mean") else None,
+                                 response_difference=float(predicted[i, 2]) if j and family in ("median", "mean") else None,
                                  probability_difference=float(predicted[i, 2]) if j and family == "logit" else None,
                                  risk_difference=float(predicted[i, 2]) if j and family == "cloglog" else None,
                                  marginal_effect=float(predicted[i, 2]) if j else None,
                                  ci_low=low, ci_high=high, difference_ci_low=combined[2][0] if j else None,
                                  difference_ci_high=combined[2][1] if j else None,
                                  ci_method="union" if low is not None else None,
-                                 scale="cumulative_recovery" if family == "cloglog" else "probability"))
+                                 scale="cumulative_recovery" if family == "cloglog" else
+                                       "original_outcome" if family in ("median", "mean") else "probability"))

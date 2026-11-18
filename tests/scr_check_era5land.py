@@ -77,6 +77,10 @@ def write_native(path, fields, start, count):
 @pytest.mark.parametrize("native_support,variant", [(False, "main"), (True, "lai_four_of_five")])
 def test_m0_m1_m2_handoff(tmp_path, monkeypatch, native_support, variant):
     """验证合成闰年贯通、E3/E4 数值、Parquet 键与原始哈希阻断。"""
+    # 后台实数据验收可能改变可用内存；此测试验证同资源签名的历史复用。
+    # 资源探测变化本身由runtime测试覆盖，不能依赖测试机器当时的内存余量。
+    from workflow import runtime as runtime_module
+    monkeypatch.setattr(runtime_module, "memory_gib", lambda: (16., 12.))
     original = runner.ROOT
     for name in ("config", "metadata", "docs", "workflow"):
         copytree(original / name, tmp_path / name,
@@ -92,11 +96,14 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch, native_support, variant):
     from workflow import run_era5land
     frozen_context = run_era5land.frozen_context
 
-    def synthetic_context(*args):
-        record, identity, output, logs, _ = frozen_context(*args)
+    def synthetic_context(*args, **kwargs):
+        record, identity, output, logs, _ = frozen_context(*args, **kwargs)
         return record, identity, output, logs, [103, 34, 103.1, 34.1]
 
     monkeypatch.setattr(run_era5land, "frozen_context", synthetic_context)
+    from workflow import run_downstream, inherit_upstream
+    monkeypatch.setattr(run_downstream, "frozen_context", synthetic_context)
+    monkeypatch.setattr(inherit_upstream, "frozen_context", synthetic_context)
     monkeypatch.setattr(run_era5land.subprocess, "check_output", lambda *a, **k: "a" * 40)
     monkeypatch.setattr(runner, "ROOT", tmp_path)
     entries = list(expected_files(params["native_era5land"], 2015, 2020))
@@ -213,6 +220,44 @@ def test_m0_m1_m2_handoff(tmp_path, monkeypatch, native_support, variant):
     assert (review / "review_table_totals.csv").is_file()
     assert len(figure_manifest) == 7 and all(item["status"] == "omitted" for item in figure_manifest)
     assert "M8" not in route1["module_status"]
+    if not native_support:
+        # 分别从早期和后期连续交接接力，检查重新计算范围。
+        for endpoint, target in (("M2", "M3"), ("M3", "M4"), ("M4", "M5"), ("M5", "M6")):
+            partial = {**options, "run_alias": f"2026-11-16_接力{endpoint}"}
+            prepared_partial = runner.run_module("M0", freeze=True, inherit_from=options["run_alias"],
+                                                 inherit_through=endpoint, **partial)
+            assert prepared_partial["inheritance"]["inherit_through"] == endpoint
+            replay_partial = runner.run_module(target, **partial)
+            assert replay_partial["module_status"][target] in ("passed", "descriptive_only")
+            directory = Path(replay_partial["downstream"])
+            assert (directory / target / "module_io.json").is_file()
+            assert not (directory / endpoint).exists()
+    # 新身份只读继承M1–M6，运行M7时不得触发原始产品计算。
+    inherited = {**options, "run_alias": "2026-11-16_继承验证"}
+    prepared = runner.run_module("M0", freeze=True, inherit_from=options["run_alias"], **inherited)
+    assert prepared["inheritance"]["source_run_id"] == route1["run_id"]
+    # 清单已发布或状态更新被中断时，可重复登记而不重置既有状态。
+    from workflow.run_era5land import update_status
+    inherited_logs = tmp_path / "logs" / inherited["run_alias"]
+    update_status(inherited_logs, "M4", "not_run")
+    resumed = runner.run_module("M0", freeze=True, inherit_from=options["run_alias"], **inherited)
+    assert resumed["inheritance"] == prepared["inheritance"]
+    assert "M4,passed" in (inherited_logs / "module_status.csv").read_text(encoding="utf-8-sig")
+    from workflow import run_downstream as downstream_runner
+    with monkeypatch.context() as guard:
+        def forbidden(*args, **kwargs):
+            raise AssertionError("继承运行不得执行M1/M2")
+        guard.setattr(downstream_runner, "run_era5land", forbidden)
+        replay = runner.run_module("M7", **inherited)
+    assert all(replay["module_status"][m] == route1["module_status"][m] for m in ("M1", "M2", "M3", "M4", "M5", "M6"))
+    inherited_root = Path(replay["downstream"])
+    assert (inherited_root / "M7/module_io.json").is_file()
+    assert not (inherited_root / "M6").exists()
+    wrong_variant = {**inherited, "variant": "main" if variant == "lai_four_of_five" else "lai_four_of_five"}
+    with pytest.raises(ValueError, match="冻结身份与请求不匹配"):
+        runner.run_module("M7", **wrong_variant)
+    with pytest.raises(ValueError, match="仅支持续跑至M7"):
+        runner.run_module("full", **inherited)
     full = runner.run_module("full", **options)
     assert full["module_status"]["M8"] == "exited"
     assert (figures.parent / "reports/route2_exit_report.md").is_file()

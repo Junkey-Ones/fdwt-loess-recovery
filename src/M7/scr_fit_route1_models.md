@@ -10,10 +10,14 @@
 - 输出固定两个 Q2、四个 Q3 双侧检验；缺失项保留在 Holm 家族大小内。区间分别为配置选择的固定空间块重抽样百分位与空间块×年份双向聚类正态区间，主表给出同时涵盖两者的区间。双侧 p 采用两种标准误对应的较大正态 p。bootstrap 成功率低于配置门槛时保留点估计与诊断。
 - `n_eff` 取事件数、实际抽样空间块大小及适用的 LAI 簇大小对应 Kish 有效计数中的较小值。LAI 的保守 EPV 用簇内逆大小权重按结局分摊。缺失、稀疏、分离和秩不足在模型清单中留痕。
 
-模型清单、系数表、边际表和两种区间分别为 `model_fit_manifest`、`model_result`、`model_marginal` 和 `route1_model_uncertainty`。中位数回归以逐步收紧的绝对损失近似求解，数值未收敛时保留状态。扩展敏感性，包括 Firth、50／200 km、年份 wild bootstrap 和按 LAI 簇抽样／加权，仍待接入。真实数据验收依赖冻结 M5 与已验收的 M6 输入。
+模型清单、系数表、边际表和两种区间分别为 `model_fit_manifest`、`model_result`、`model_marginal` 和 `route1_model_uncertainty`。2026-11-16起，中位数回归改用[加权绝对偏差线性规划](scr_fit_median.md)，核验原始—对偶最优性；数值或证书未通过仍保留失败状态。原近似算法的真实自举有133／132次不收敛，本修复不改估计对象与80%门槛。扩展敏感性，包括 Firth、50／200 km、年份 wild bootstrap 和按 LAI 簇抽样／加权，仍待接入。真实数据验收依赖冻结 M5 与已验收的 M6 输入。
 
 ## 2026-11-15 空间规则修订
 
 默认 `block.resampling_unit=fixed_space`，M5超级块只作诊断；`superblock`显式保留旧规则，旧参数缺键时也沿用旧规则。抽样整条事件历史，不按候行独立抽样；年份标签为事件起始年。同一格点跨年仍归原固定空间块。
 
 新增清单字段 `n_resampling_block`、`n_year`、`resampling_unit` 和 `support_count_basis`。`n_superblock`始终是M5连接诊断数，不再用于新方案的门槛。系数和边际不确定性表明确标记 `fixed_space_bootstrap`；双向协方差仍标记 `block_year`。比例和候差仅有空间bootstrap，不能称为双向区间。原门槛、正态参考分布及Holm规则不变；小年份簇校准和覆盖率模拟尚待科学验收。见同目录 `scr_spatial_inference.md`。
+
+## 2026-11-17完成项
+
+年份簇得分一次线性化敏感性单独输出，不替代原检验。Q2均值、Q3共同样本、暴露簇抽样/加权、随访/季末截断和50/200km已通过共用拟合器接入，详见[scr_model_sensitivity.md](scr_model_sensitivity.md)。加权模型的得分、信息、空间自举和边际平均同步使用事件权重。实数据验收状态以推进清单为准，接入不等于正式分析完成。Firth、IPCW按适用性继续审计。

@@ -47,7 +47,7 @@ def registered_inputs(root, path, digest):
 
 
 def compute_module(module, tables, supplements, params, plan, matrix, stage=None, schema=None, progress=None,
-                   identity=None):
+                   identity=None, study_bbox=None):
     """从已核验的输入计算模块表及状态。"""
     import pyarrow.parquet as pq
     from src.M3.scr_build_climatology import build_climatology
@@ -63,6 +63,7 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
     )
     from src.M7.scr_fit_recovery_risk import recovery_time_baseline
     from src.M7.scr_fit_route1_models import fit_route1_models, lag_intervals, summarize_fr_support
+    from src.M7.scr_model_sensitivity import TABLES as SENSITIVITY_TABLES, fit_sensitivity
     from src.M8.scr_encode_exits import encode_exits
     from src.M8.scr_describe_exits import cumulative_incidence, sample_audit
     from src.M8.scr_fit_cause_specific import fit_cause_specific
@@ -74,11 +75,13 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         if events is not None and not events:
             return []
         filters = None if events is None else [("grid_id", "in", sorted({row["grid_id"] for row in events}))]
+        emit(progress, module, "读取交接表", operation="读取", path=tables[name])
         return pq.read_table(tables[name], columns=columns, filters=filters).to_pylist()
 
     series_keys = ["product_combo", "grid_id", "support_id", "t_abs"]
 
     def ordered_pentads(columns):
+        emit(progress, module, "读取候序列", operation="读取", path=tables["grid_pentad"])
         series = pq.read_table(tables["grid_pentad"], columns=columns)
         series = series.sort_by([(key, "ascending") for key in series_keys])
         return (row for batch in series.to_batches(max_chunksize=8192) for row in batch.to_pylist())
@@ -89,6 +92,7 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             by_grid[event["grid_id"]].append(event)
         if not by_grid:
             return
+        emit(progress, module, "读取事件候序列", operation="读取", path=tables["grid_pentad"])
         series = pq.read_table(tables["grid_pentad"], columns=[*series_keys, *columns],
                                filters=[("grid_id", "in", sorted(by_grid))])
         series = series.sort_by([("grid_id", "ascending"), ("t_abs", "ascending")])
@@ -99,7 +103,10 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             raise ValueError("部分事件找不到对应的格点候序列。")
 
     def extra(name):
-        return pq.read_table(supplements[name]).to_pylist() if name in supplements else []
+        if name not in supplements:
+            return []
+        emit(progress, module, "读取补充输入", operation="读取", path=supplements[name])
+        return pq.read_table(supplements[name]).to_pylist()
 
     status, details = "passed", {}
     result = {}
@@ -107,6 +114,7 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         required = "grid_support"
         if required not in supplements:
             return {}, "conditional_skipped", {"missing": ["MCD12Q1.061", "MCD12Q2.061"], "required_handoff": required}
+        emit(progress, module, "读取格点支持", operation="读取", path=supplements[required])
         support, mask, phenology = prepare_support(json.loads(supplements[required].read_bytes()),
                                                   read("grid_manifest"), params, plan["variant"])
         result.update(grid_mask=mask, grid_phenology_year=phenology)
@@ -145,7 +153,7 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             raise ValueError("部分事件找不到对应的完整格点候序列。")
         result["superblock_membership"] = build_superblocks(result["event_master"], read("grid_manifest"))
     elif module == "M6":
-        emit(progress, "M6", "汇总背景气候", "打开 ERA5-Land 日表")
+        emit(progress, "M6", "汇总背景气候", "打开 ERA5-Land 日表", operation="读取", path=tables["grid_day_era5land"])
         daily = pq.ParquetFile(tables["grid_day_era5land"])
         def climate_batches():
             done = 0
@@ -192,13 +200,21 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
             details["missing"] = [name for name in ("vegetation_grid_year", "grid_static_covariates")
                                   if name not in supplements]
     elif module == "M7":
+        from src.M7.scr_q1_diagnostics import censor_audit, followup_subset, annual_companions
         events = read("event_master")
         blocks = {row["grid_id"]: row["block_id"] for row in read("grid_manifest")}
         settings = params["route1"]
         horizons = params["sensitivity"]["followup"]
         exposure_version = "lai_four_of_five" if plan.get("variant") == "lai_four_of_five" else "main"
+        from collections import Counter
+        from src.M7.scr_accept_route1 import source_counts
+        verify_h = {"main": settings["recovery_risk_h"], **horizons,
+                    **{v: settings["recovery_risk_h"] for v in settings["q1_censor_sensitivities"]}}
+        expected = {v: Counter() for v in verify_h}
         risk, sensitivity_risk = [], {version: [] for version in horizons}
         for _, group, rows in event_pentads(events, ["smp", "active_flag"]):
+            for v, h in verify_h.items():
+                expected[v].update(source_counts(group, rows, h, v))
             restore_fr_eligibility(group, rows)
             risk.extend(recovery_risk(group, rows, params, exposure_version=exposure_version))
             for version, horizon in horizons.items():
@@ -206,27 +222,111 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
                                                               exposure_version=exposure_version))
         result["route1_recovery_person_pentad"] = risk
         exposures = read("event_exposure")
+        from src.M7.scr_recovery_distribution import recovery_distribution
         details["model_candidate_samples"] = audit_model_samples(events, exposures, risk)
         superblocks = {row["block_id"]: row["superblock_id"] for row in read("superblock_membership")}
+        result["q1_recovery_distribution"] = recovery_distribution(events, exposures, blocks, superblocks, params)
         result["q2_fr_grid_year"], result["q2_fr_spatial"] = summarize_fr_support(events, blocks, superblocks, params)
         result.update(fit_route1_models(events, exposures, risk, blocks, superblocks, params, identity or {},
             report=lambda stage, detail, **counts: emit(progress, "M7", stage, detail, **counts)))
+        from src.M7.scr_accept_route1 import audit_annual, audit_curve, four_year_support
+        details["four_year_support"] = four_year_support(exposures, blocks, events, risk)
+        details["analysis_scheme"] = matrix.get("variant_labels", {}).get(plan.get("variant"), {}).get("label", exposure_version)
         details["model_status"] = {row["analysis_id"]: row["inference_level"] for row in result["model_fit_manifest"]}
+        from src.M7.scr_model_diagnostics import model_diagnostics
+        result["model_diagnostics"] = model_diagnostics(result["model_fit_manifest"], result["model_result"], params)
+        from src.M7.scr_psm_contrasts import psm_analysis
+        psm_tables, details["psm"] = psm_analysis(events, exposures, blocks, params)
+        result.update(psm_tables)
+        for name in SENSITIVITY_TABLES.values():
+            result[name] = []
+        registered = matrix.get("m7_model_sensitivities", [])
+        if any(v not in registered for v in settings["model_sensitivities"]):
+            raise ValueError("M7模型敏感性缺少规范矩阵登记。")
+
+        def fit_model_sensitivity(version, followup, horizon=None):
+            alternate_blocks, diagnostic_blocks = blocks, superblocks
+            if version in params["sensitivity"]["block_km"]:
+                from src.M7.scr_block_sensitivity import fixed_blocks
+                grid = read("grid_manifest")
+                if fixed_blocks(grid, study_bbox, params["block"]["km"], params) != blocks:
+                    raise ValueError("M7空间投影与M2冻结块标签不一致。")
+                alternate_blocks = fixed_blocks(grid, study_bbox, params["sensitivity"]["block_km"][version], params)
+                diagnostic_blocks = {}
+            outputs = fit_sensitivity(version, events, exposures, followup, alternate_blocks, diagnostic_blocks,
+                params, identity or {}, horizon=horizon,
+                report=lambda stage, detail, **counts: emit(progress, "M7", stage, f"{version} · {detail}", **counts))
+            for name, rows in outputs.items():
+                result[name].extend(rows)
+
+        for version in settings["model_sensitivities"]:
+            if version not in horizons and version not in settings["q1_censor_sensitivities"]:
+                fit_model_sensitivity(version, risk)
+        result["fz_grid_year"],result["fz_spatial"],result["dfai_distribution"]=[],[],[]
+        details["branch_supplements"]={"status":"missing_branch_inputs"}
+        if any(v not in matrix.get("m7_supplements",[]) for v in settings["supplements"]):
+            raise ValueError("M7补充分析缺少规范矩阵登记。")
+        if {"event_branch","event_recovery_trajectory"} <= tables.keys():
+            from src.M7.scr_branch_supplements import branch_supplements
+            supplement,branch_audit=branch_supplements(events,exposures,read("event_branch"),
+                read("event_recovery_trajectory",["episode_id","t_abs","active_flag"]),blocks,superblocks,params,identity or {},
+                report=lambda stage,detail,**counts: emit(progress,"M7",stage,f"FZ补充 · {detail}",**counts))
+            for name,rows in supplement.items():result[name].extend(rows)
+            details["branch_supplements"]={"status":"computed",**branch_audit}
         result["q1_recovery_risk"], details["q1_recovery_risk"] = recovery_time_baseline(
-            risk, events, blocks, settings["recovery_risk_h"], settings["recovery_time_df"], params["infer"])
+            risk, events, blocks, settings["recovery_risk_h"], settings["recovery_time_df"], params["infer"],
+            params=params, superblocks=superblocks,
+            report=lambda stage, detail, **counts: emit(progress, "M7", stage, detail, **counts))
         result["q1_recovery_risk_sensitivity"] = []
+        result["q1_curve_uncertainty"] = [dict(row,version="main",H=settings["recovery_risk_h"])
+            for row in details["q1_recovery_risk"].pop("uncertainty_rows",[])]
         details["q1_recovery_risk_sensitivity"] = {}
-        for version, horizon in horizons.items():
+        result["q1_censor_audit"] = censor_audit(risk, events, "main", settings["recovery_risk_h"], params)
+        details["q1_risk_check"] = {"main": audit_curve(risk, result["q1_recovery_risk"], expected["main"])}
+        curve_horizons = dict(horizons)
+        for version in settings["q1_censor_sensitivities"]:
+            sensitivity_risk[version] = followup_subset(risk, version)
+            curve_horizons[version] = settings["recovery_risk_h"]
+        for version, horizon in curve_horizons.items():
+            followup = sensitivity_risk.pop(version)
+            if version in settings["model_sensitivities"]:
+                fit_model_sensitivity(version, followup, horizon)
+            result["q1_censor_audit"].extend(censor_audit(followup, events, version, horizon, params))
             curve, support = recovery_time_baseline(
-                sensitivity_risk.pop(version), events, blocks,
-                horizon, settings["recovery_time_df"], params["infer"])
+                followup, events, blocks,
+                horizon, settings["recovery_time_df"], params["infer"], params=params, superblocks=superblocks,
+                report=lambda stage, detail, **counts: emit(progress, "M7", stage, detail, **counts))
+            details["q1_risk_check"][version] = audit_curve(followup, curve, expected[version])
             result["q1_recovery_risk_sensitivity"].extend(
                 dict(row, version=version, H=horizon) for row in curve)
             details["q1_recovery_risk_sensitivity"][version] = support
+            result["q1_curve_uncertainty"].extend(dict(row,version=version,H=horizon)
+                for row in support.pop("uncertainty_rows",[]))
         result["q1_annual"], result["q2_annual"] = summarize(events, params)
+        result["e1a_grid_year"],result["e1a_frequency_model"] = [],[]
+        details["e1a"] = {"status":"missing_grid_mask"}
+        if "grid_mask" in tables:
+            from src.M7.scr_e1a_frequency import count_grid_years, fit_frequency
+            emit(progress,"M7","构建E1a分母","保留零事件年，核对完整活跃窗及降水阈值")
+            batches=pq.ParquetFile(tables["grid_pentad"]).iter_batches(columns=["grid_id","year","active_flag",
+                "active_window_length_L","smp","p_mm","p95_usable"])
+            result["e1a_grid_year"]=count_grid_years(batches,read("grid_mask"),events,blocks,params,
+                report=lambda stage,detail,**counts: emit(progress,"M7",stage,detail,**counts))
+            result["e1a_frequency_model"],details["e1a"]=fit_frequency(result["e1a_grid_year"],superblocks,params,
+                report=lambda stage,detail,**counts: emit(progress,"M7",stage,detail,**counts))
+        result["q1_annual_companions"], result["q1_companion_trend"] = [], []
+        details["q1_companions"] = "missing_grid_mask"
+        if "grid_mask" in tables:
+            batches = pq.ParquetFile(tables["grid_pentad"]).iter_batches(columns=["grid_id", "year", "active_flag",
+                "active_window_length_L", "phenology_fallback", "smp", "p_mm"])
+            result["q1_annual_companions"] = annual_companions(batches, read("grid_mask"), events, params)
+            result["q1_companion_trend"] = trend_estimates(result["q1_annual_companions"], params,
+                metrics=("mean_active_pentads", "n_a", "phenology_fallback_rate", "smp_completeness", "precip_completeness"))
+            details["q1_companions"] = "passed"
         result["q2_lag_result"] = summarize_lags(events)
         lag_intervals(events, result["q2_lag_result"], blocks, superblocks, params)
         result["trend_estimate"] = trend_estimates(result["q1_annual"], params)
+        audit_annual(events, result["q1_annual"], result["trend_estimate"], params)
         result["trend_estimate_sensitivity"] = [
             dict(row, min_valid_years=minimum)
             for minimum in params["trend"]["sensitivity_min_valid_years"]
@@ -234,7 +334,31 @@ def compute_module(module, tables, supplements, params, plan, matrix, stage=None
         ]
         status = "descriptive_only"
         details["q1_trend_status"] = {row["metric"]: row["status"] for row in result["trend_estimate"]}
-        details["pending"] = ["Q1 恢复风险区间和敏感性、趋势伴随诊断", "Q2／Q3 扩展敏感性"]
+        details["sensitivity_model_status"] = {
+            f"{row['sensitivity']}:{row['analysis_id']}": row["inference_level"]
+            for row in result["sensitivity_model_manifest"]}
+        details["ipcw_applicability"] = [dict(version=row["version"], H=row["H"], status=row["ipcw_status"],
+                                              n_missing=row["n_missing"])
+                                          for row in result["q1_censor_audit"] if row["domain"] == "all"]
+        details["firth_applicability"] = {
+            row["analysis_id"]: ("requires_conditional_implementation" if row.get("separation_flag")
+                else "not_required_for_fitted_model" if row.get("convergence_status") == "fitted"
+                else "requires_failure_diagnosis_before_firth")
+            for row in result["model_fit_manifest"] if row["model_family"] == "logit"}
+        details["pending"] = ["当前冻结版本的端到端实数据验收",
+                              "完整模型的有限样本覆盖率尚未确立；简单模拟不能代替",
+                              "PSM仅提供固定匹配样本条件关联，未提供总体ATT及匹配选择不确定性"]
+        if any(row["status"] == "requires_ipcw_model" for row in details["ipcw_applicability"]):
+            details["pending"].append("当前样本触发IPCW条件，删失模型尚未实现")
+        if "requires_conditional_implementation" in details["firth_applicability"].values():
+            details["pending"].append("当前模型触发Firth条件，惩罚似然敏感性尚未实现")
+        if any(row.get("union_status") != "available" for row in result["q1_recovery_risk"]):
+            details["pending"].append("Q1部分候的空间×年份联合区间未放行")
+        if details["q1_companions"] != "passed":
+            details["pending"].append("Q1年度伴随诊断缺少输入")
+        if any(s["interval_status"] != "available" for s in
+               [details["q1_recovery_risk"], *details["q1_recovery_risk_sensitivity"].values()]):
+            details["pending"].append("Q1部分候或随访期的空间自举区间未通过支撑门槛")
     elif module == "M8":
         blocks = {row["grid_id"]: row["block_id"] for row in read("grid_manifest")}
         events = read("event_master")
@@ -372,6 +496,7 @@ def write_climatology(stage, path, support, params, combo, definitions, progress
     passthrough = set(definitions["grid_pentad"]["columns"])
     source_fields = pq.ParquetFile(path).schema_arrow
     columns = [field.name for field in source_fields if field.name in passthrough]
+    emit(progress, "M3", "读取气候态输入", operation="读取", path=path)
     source = pq.read_table(path, columns=columns).sort_by([("grid_id", "ascending"), ("t_abs", "ascending")])
     types = {field.name: field.type for field in source.schema}
     for data_type, fields in (
@@ -406,13 +531,22 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
 
     if plan["product_combo"] != params["products"]["main"] or plan["variant"] not in {"main", "fixed_season", "lai_four_of_five"}:
         raise ValueError("当前下游编排仅接受 ERA5-Land 与主规范、LAI四年有效或固定季节方案。")
+    from .inherit_upstream import load_inheritance
+    inheritance = load_inheritance(root, plan, config_path, params, digest)
     revision = None
-    if plan["resume"] and "M5" in plan["modules"]:
+    if not inheritance and plan["resume"] and "M5" in plan["modules"]:
         from .resume_m5 import load_m5_revision
 
         revision = load_m5_revision(root, plan, config_path, params, load_config, digest)
-    if revision:
-        record, identity, output, logs, _ = revision["context"]
+    if inheritance:
+        record, identity, output, logs, study_bbox = inheritance["context"]
+        upstream = {"run_id": record["run_id"],
+                    "module_status": {key: value["status"] for key, value in inheritance["receipts"].items()},
+                    "m1_reports": str(root / params["output"]["outputs"] / inheritance["manifest"]["source_alias"] / "reports")}
+        for module in ("M0", *inheritance["receipts"]):
+            emit(progress, module, "已校验只读继承", state="reused")
+    elif revision:
+        record, identity, output, logs, study_bbox = revision["context"]
         upstream = {"run_id": record["run_id"], "module_status": {"M1": "passed", "M2": "passed"},
                     "m1_reports": str(output / "reports")}
         for module in ("M0", "M1", "M2"):
@@ -423,8 +557,8 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
     statuses = upstream["module_status"]
     if statuses.get("M2") != "passed":
         return {**upstream, **plan, "run_id": upstream["run_id"], "module_status": statuses}
-    if not revision:
-        record, identity, output, logs, _ = frozen_context(root, plan, config_path, params, digest)
+    if not revision and not inheritance:
+        record, identity, output, logs, study_bbox = frozen_context(root, plan, config_path, params, digest)
     schema = load_config(root / "config/schema_registry.yaml")["tables"]
     matrix = load_config(root / "config/specification_matrix.yaml")
     frozen = (root / params["output"]["frozen"]).resolve()
@@ -445,6 +579,26 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
 
     dag = load_config(root / "workflow/dag.yaml")["modules"]
     route1_reports = {"q1_recovery_risk": "q1_recovery_risk.csv",
+                      "route1_year_wild_sensitivity": "route1_year_wild_sensitivity.csv",
+                      "model_diagnostics": "model_diagnostics.csv",
+                      "psm_pairs": "psm_pairs.csv",
+                      "psm_balance": "psm_balance.csv",
+                      "psm_contrast": "psm_contrast.csv",
+                      "sensitivity_model_manifest": "sensitivity_model_manifest.csv",
+                      "sensitivity_model_result": "sensitivity_model_result.csv",
+                      "sensitivity_model_marginal": "sensitivity_model_marginal.csv",
+                      "sensitivity_model_uncertainty": "sensitivity_model_uncertainty.csv",
+                      "sensitivity_year_wild": "sensitivity_year_wild.csv",
+                      "q1_curve_uncertainty": "q1_curve_uncertainty.csv",
+                      "q1_recovery_distribution": "q1_recovery_distribution.csv",
+                      "e1a_grid_year": "e1a_grid_year.csv",
+                      "e1a_frequency_model": "e1a_frequency_model.csv",
+                      "fz_grid_year": "fz_grid_year.csv",
+                      "fz_spatial": "fz_spatial.csv",
+                      "dfai_distribution": "dfai_distribution.csv",
+                      "q1_censor_audit": "q1_censor_audit.csv", "q1_annual_companions": "q1_annual_companions.csv",
+                      "q1_companion_trend": "q1_companion_trend.csv",
+                      "q1_recovery_risk_sensitivity": "q1_recovery_risk_sensitivity.csv",
                       "trend_estimate": "q1_trend_result.csv", "q2_lag_result": "q2_lag_result.csv",
                       **{name: f"{name}.csv" for name in ("model_fit_manifest", "model_result", "model_marginal",
                                                         "route1_model_uncertainty", "q2_fr_spatial")}}
@@ -453,6 +607,11 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
         m2_path = logs / "module_io_M2.json"
         index_outputs(json.loads(m2_path.read_bytes()))
         base_inputs = [item(m2_path), *evidence]
+        if inheritance:
+            base_inputs.append(inheritance["reference"])
+            for module, receipt in inheritance["receipts"].items():
+                if module not in ("M1", "M2"):
+                    index_outputs(receipt)
         if revision:
             revision_start = int(revision["manifest"]["starts_at"][1:])
             revision_path = logs / f"m{revision_start}_code_revision.json"
@@ -463,7 +622,8 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                 revision_path = logs / f"m6_code_revision_{checksum}.json"
             atomic_write(revision_path, revision_content)
             identity = {**identity, "code_revision_sha256": digest(revision_path)}
-        downstream = plan["modules"][3:]
+        downstream = [module for module in plan["modules"][3:]
+                      if not inheritance or module not in inheritance["receipts"]]
         for module in downstream:
             started = monotonic()
             emit(progress, module, "核对交接")
@@ -479,7 +639,8 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                     details={"blocked_by": blocked}, input_files=[], output_files=[])))
                 emit(progress, module, "上游未放行", "、".join(blocked), state="conditional_skipped")
                 continue
-            inputs = [*base_inputs, *(item(destination / key / "module_io.json")
+            inputs = [*base_inputs, *(item(logs / f"module_io_{key}.json" if inheritance and key in inheritance["receipts"]
+                                          else destination / key / "module_io.json")
                                       for key in dag[module]["requires"] if key not in ("M0", "M1", "M2"))]
             if revision:
                 if int(module[1:]) >= revision_start:
@@ -500,7 +661,7 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                     native = {"grid_support": files}
                 for done, path in enumerate(files):
                     emit(progress, module, "核验前置原始数据", f"计算 {path.name} 的 SHA-256",
-                         done=done, total=len(files), unit="文件")
+                         done=done, total=len(files), unit="文件", operation="校验", path=path)
                     inputs.append(item(path))
             if module == "M6":
                 from src.M6.scr_prepare_native import native_sources
@@ -511,7 +672,7 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                 files = [path for paths in native.values() for path in paths]
                 for done, path in enumerate(files):
                     emit(progress, "M6", "核验前置原始数据", f"计算 {path.name} 的 SHA-256",
-                         done=done, total=len(files), unit="文件")
+                         done=done, total=len(files), unit="文件", operation="校验", path=path)
                     inputs.append(item(path))
                 if files:
                     emit(progress, "M6", "核验前置原始数据", "原始文件哈希已计算",
@@ -558,26 +719,27 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                                 workers=plan["runtime"]["effective"]["workers"])
                             for done, (name, rows) in enumerate(prepared.items()):
                                 emit(progress, "M6", "写入原生输入表", f"{name}.parquet · {len(rows)} 行",
-                                     done=done, total=len(prepared), unit="表")
+                                     done=done, total=len(prepared), unit="表", operation="写入", path=stage / f"{name}.parquet")
                                 target = stage / f"{name}.parquet"
                                 write_table(target, rows, schema[name])
                                 native_supplements[name] = target
                         emit(progress, module, "执行计算")
                         result, status, details = compute_module(module, tables, native_supplements, params, plan, matrix,
                                                                  stage=stage, schema=schema, progress=progress,
-                                                                 identity=identity)
-                        emit(progress, module, "写入产物")
+                                                                 identity=identity, study_bbox=study_bbox)
+                        emit(progress, module, "写入产物", operation="写入", path=stage)
                         for name, rows in result.items():
                             if name in native:
                                 continue
-                            if module == "M6":
-                                emit(progress, "M6", "写入产物", f"写入 {name}.parquet")
+                            emit(progress, module, "写入产物", operation="写入", path=stage / f"{name}.parquet")
                             definition = schema["event_master" if name == "event_master_base" else name]
                             if name == "event_master_base":
                                 definition = {**definition, "columns": [column for column in definition["columns"]
                                                                        if column != "route1_FR_eligible"]}
                             write_table(stage / f"{name}.parquet", rows, definition)
                         if module == "M7":
+                            from src.M7.scr_accept_route1 import model_report
+                            atomic_write(stage / "m7_acceptance.md", model_report(result, details).encode("utf-8"))
                             for name, filename in route1_reports.items():
                                 atomic_write(stage / filename, csv_bytes(schema[name]["columns"], result[name]))
                         if module == "M8":
@@ -646,7 +808,7 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                         receipt = dict(run_id=record["run_id"], module_id=module, status=status, details=details,
                                        input_files=inputs, output_files=outputs)
                         atomic_write(stage / receipt_path.name, json_bytes(receipt))
-                        emit(progress, module, "发布冻结交接")
+                        emit(progress, module, "发布冻结交接", operation="发布", path=stage_dir)
                         stage.rename(stage_dir)
                     index_outputs(receipt)
                 except Exception:
@@ -662,6 +824,9 @@ def run_downstream(root, plan, config_path, params, load_config, progress):
                          elapsed_seconds=monotonic() - started)
             atomic_write(logs / module / f"{stamp.replace(':', '-')}.jsonl", json_bytes(event))
             if module == "M7":
+                acceptance = stage_dir / "m7_acceptance.md"
+                if acceptance.is_file():
+                    atomic_write(output / "reports" / acceptance.name, acceptance.read_bytes())
                 for filename in route1_reports.values():
                     atomic_write(output / "tables" / filename, (stage_dir / filename).read_bytes())
             if module == "M8":

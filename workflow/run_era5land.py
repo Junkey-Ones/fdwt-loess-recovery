@@ -142,6 +142,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
         path = logs / f"module_io_{module}.json"
         if not path.is_file():
             return None
+        emit(progress, module, "读取模块回执", operation="读取", path=path)
         receipt = json.loads(path.read_bytes())
         if any(receipt[key] != value for key, value in base.items()):
             raise ValueError(f"{module} 回执身份不符。")
@@ -193,6 +194,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
             output_files = []
             for name, rows in reports.items():
                 path = output / "reports" / f"{name}.csv"
+                emit(progress, "M1", "写入验收报告", operation="写入", path=path)
                 atomic_write(path, csv_bytes(schema[name]["columns"], rows))
                 output_files.append(file_record(path))
             m1 = {**base, "module_id": "M1", "status": status, "evidence_sha256": evidence_hash,
@@ -214,10 +216,11 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
             done = 0
             emit(progress, "M2", stage, total=total, unit="字节")
             for path, checksum in paths:
+                emit(progress, "M2", stage, done=done, total=total, unit="字节", operation="校验", path=path)
                 def advance(size):
                     nonlocal done
                     done += size
-                    emit(progress, "M2", stage, path.name, done=done, total=total, unit="字节")
+                    emit(progress, "M2", stage, path.name, done=done, total=total, unit="字节", operation="校验", path=path)
 
                 if digest(path, advance) != checksum:
                     raise ValueError(f"M1 原始文件哈希已变化：{path.name}")
@@ -241,7 +244,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                         emit(progress, "M2", "日候归并")
                         prepare_era5land(root, stage, params, bbox, schema, progress, plan.get("runtime"))
                         verify_raw("复核原始输入")
-                        emit(progress, "M2", "写入预处理清单")
+                        emit(progress, "M2", "写入预处理清单", operation="写入", path=stage / "run.json")
                         atomic_write(stage / "run.json", json_bytes({**identity, "module": "M2",
                                                                     "status": "passed", "upstream": m1_link,
                                                                     "table_sha256": {path.name: digest(path)
@@ -250,7 +253,7 @@ def run_era5land(root, plan, config_path, params, load_config, progress):
                 except Exception:
                     update_status(logs, "M2", "failed")
                     raise
-            emit(progress, "M2", "校验预处理交接")
+            emit(progress, "M2", "校验预处理交接", operation="读取", path=destination / "run.json")
             saved = json.loads((destination / "run.json").read_bytes())
             expected = {"grid_manifest.parquet", "time_pentad_calendar.parquet", "run.json",
                         "grid_day_era5land.parquet", "grid_pentad_base_era5land.parquet"}

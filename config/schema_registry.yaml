@@ -503,6 +503,7 @@ tables:
     - window_years
     - LAI_base
     - LAI_trend
+    - LAI_in_exposure_period
     - LAI_n_valid_years
     - LAI_full_window
     - LAI_window_eligible
@@ -705,6 +706,8 @@ tables:
     - error_message
   model_fit_manifest:
     columns:
+    - outcome_sd
+    - weight_kish
     - analysis_id
     - run_id
     - estimand
@@ -775,6 +778,8 @@ tables:
     - term
   model_marginal:
     columns:
+    - predicted_response
+    - response_difference
     - analysis_id
     - term
     - deep_reference
@@ -813,12 +818,27 @@ tables:
   q1_annual:
     columns: [year, n_event, RT, delta_SMP, RR, RT_q25, RT_q75, delta_SMP_mean, RR_mean]
     primary_key: [year]
+  route1_year_wild_sensitivity:
+    columns: [analysis_id, term, estimate, ci_low, ci_high, ci_method, n_year, bootstrap_requested, bootstrap_success, status, inference_scope]
+    primary_key: [analysis_id, term]
+  q1_censor_audit:
+    columns: [version, H, domain, year, n_enrolled, n_recovered, n_administrative, n_missing, n_data_end, n_season_end, n_phenology_missing, n_unknown, n_zero_followup, ipcw_status]
+    primary_key: [version, domain, year]
+  q1_annual_companions:
+    columns: [year, n_grid_year, n_vegetation_grids, n_valid_phenology, n_fallback_denominator, n_a, mean_active_pentads, phenology_fallback_rate, n_active_pentads, smp_completeness, precip_completeness]
+    primary_key: [year]
+  q1_companion_trend:
+    columns: [metric, n_years, sen_slope, status, p_mk, p_hamed_rao, ljung_box_lag1_p, variance_factor, primary_test, primary_p, primary_p_holm]
+    primary_key: [metric]
   q1_recovery_risk:
-    columns: [followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status]
+    columns: [followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status, hazard_ci_low, hazard_ci_high, cumulative_ci_low, cumulative_ci_high, bootstrap_success_hazard, bootstrap_success_cumulative, bootstrap_requested, n_resampling_block, ci_method, ci_level, ci_scope, interval_status, hazard_union_ci_low, hazard_union_ci_high, cumulative_union_ci_low, cumulative_union_ci_high, union_status]
     primary_key: [followup_pentad]
   q1_recovery_risk_sensitivity:
-    columns: [version, H, followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status]
+    columns: [version, H, followup_pentad, n_at_risk, n_recovery, hazard, cumulative_recovery, status, hazard_ci_low, hazard_ci_high, cumulative_ci_low, cumulative_ci_high, bootstrap_success_hazard, bootstrap_success_cumulative, bootstrap_requested, n_resampling_block, ci_method, ci_level, ci_scope, interval_status, hazard_union_ci_low, hazard_union_ci_high, cumulative_union_ci_low, cumulative_union_ci_high, union_status]
     primary_key: [version, followup_pentad]
+  q1_curve_uncertainty:
+    columns: [version, H, followup_pentad, quantity, estimate, ci_method, ci_low, ci_high, ci_scope, n_year, status]
+    primary_key: [version, followup_pentad, quantity, ci_method]
   q2_annual:
     columns: [year, n_recovered, n_known, n_positive, n_unknown, n_outside_active_window, proportion]
     primary_key: [year]
@@ -865,3 +885,60 @@ tables:
   cross_product_match_summary:
     columns: [product_combo, n_main, n_alt, n_match, main_hit, alt_hit, jaccard]
     primary_key: [product_combo]
+
+  sensitivity_model_manifest:
+    columns: [outcome_sd, weight_kish, sensitivity, analysis_id, run_id, estimand, question, model_family, model_code, outcome, exposure_version, definition_id, product, support_id, sample_start_year, sample_end_year, formula, link_function, n_event, n_before, n_exposure, cluster_size_median, cluster_size_p95, cluster_size_max, max_cluster_share, n_outcome, n_nonoutcome, n_block, n_superblock, n_resampling_block, n_year, resampling_unit, support_count_basis, n_eff, epv, conservative_epv, convergence_status, bootstrap_success, bootstrap_requested, bootstrap_failure_counts, land_cover_block_counts, bootstrap_category_support_ceiling, inference_warning, separation_flag, support_gate, inference_level, model_object_path, random_seed_id, code_hash]
+    primary_key: [sensitivity, analysis_id]
+
+  sensitivity_model_result:
+    columns: [sensitivity, analysis_id, term, scale, estimate, std_error, ci_low, ci_high, ci_method, p_raw, test_family, test_id, p_holm, effect_unit, reference_level, standardization, estimand_note]
+    primary_key: [sensitivity, analysis_id, term]
+
+  sensitivity_model_marginal:
+    columns: [predicted_response, response_difference, sensitivity, analysis_id, term, deep_reference, deep_reference_value, LAI_reference, LAI_reference_value, predicted_probability, probability_difference, risk_difference, marginal_effect, ci_low, ci_high, difference_ci_low, difference_ci_high, ci_method, scale]
+    primary_key: [sensitivity, analysis_id, term, deep_reference, LAI_reference]
+
+  sensitivity_model_uncertainty:
+    columns: [sensitivity, analysis_id, term, quantity, ci_method, ci_low, ci_high]
+    primary_key: [sensitivity, analysis_id, term, quantity, ci_method]
+
+  sensitivity_year_wild:
+    columns: [sensitivity, analysis_id, term, estimate, ci_low, ci_high, ci_method, n_year, bootstrap_requested, bootstrap_success, status, inference_scope]
+    primary_key: [sensitivity, analysis_id, term]
+
+  model_diagnostics:
+    columns: [analysis_id, term, test_id, gam_status, n_eff, equivalence_low, equivalence_high, equivalence_status, mde, mde_scale, target_power, mde_method, interpretation]
+    primary_key: [analysis_id, term]
+
+  psm_pairs:
+    columns: [pair_id, high_episode_id, low_episode_id, logit_distance]
+    primary_key: [pair_id]
+  psm_balance:
+    columns: [term, smd_before, smd_after, passed]
+    primary_key: [term]
+  psm_contrast:
+    columns: [outcome, n_pair, n_pair_missing, estimate, high_mean, low_mean, ci_low, ci_high, n_block, n_year, n_eff, status, estimand, ci_method, limitation]
+    primary_key: [outcome]
+
+  q1_recovery_distribution:
+    columns: [domain, domain_id, metric, statistic, n_candidate, n_event, n_missing, n_block, n_eff, n_year, estimate, q25, q75, bootstrap_ci_low, bootstrap_ci_high, block_year_ci_low, block_year_ci_high, ci_low, ci_high, bootstrap_success, bootstrap_requested, bootstrap_method, ci_method, status, limitation, population]
+    primary_key: [domain, domain_id, metric, statistic]
+
+  e1a_grid_year:
+    columns: [grid_id, year, block_id, L, n_active, n_valid, n_fr_known, n_unknown, n_unresolved, included, exclusion_reason, rate]
+    primary_key: [grid_id, year]
+  e1a_frequency_model:
+    columns: [term, estimate, scale, dispersion, bootstrap_ci_low, bootstrap_ci_high, block_year_ci_low, block_year_ci_high, ci_low, ci_high, status, ci_method]
+    primary_key: [term]
+
+  fz_grid_year:
+    columns: [grid_id, year, block_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion]
+    primary_key: [grid_id, year]
+
+  fz_spatial:
+    columns: [domain, domain_id, n_a, n_known, n_positive, n_unknown, n_outside_active_window, proportion, n_superblock, n_resampling_block, ci_method, ci_low, ci_high]
+    primary_key: [domain, domain_id]
+
+  dfai_distribution:
+    columns: [branch, domain, domain_id, metric, statistic, n_candidate, n_event, n_missing, n_block, n_eff, n_year, estimate, q25, q75, bootstrap_ci_low, bootstrap_ci_high, block_year_ci_low, block_year_ci_high, ci_low, ci_high, bootstrap_success, bootstrap_requested, bootstrap_method, ci_method, status, limitation, population]
+    primary_key: [branch, domain, domain_id, metric, statistic]

@@ -10,6 +10,7 @@
 退出码：0 计划有效，1 执行失败，2 预检失败，130 中断。
 """
 import argparse
+import csv
 from datetime import date, datetime, timezone
 import json
 import os
@@ -100,7 +101,7 @@ def variant_options(matrix):
             for key in matrix["selectable_variants"]]
 
 
-def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, formal_freeze):
+def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, formal_freeze, progress=None):
     """收集只读审计输入并将单次审计明细原子封存到日志目录。"""
     from src.M0.scr_audit_protocol import audit_protocol
 
@@ -118,7 +119,12 @@ def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
     paths = [schema_path, freeze_path, "config/deviation_log.csv", "workflow/dag.yaml",
              "metadata/source_file_manifest.csv", "metadata/source_variable_map.csv",
              "metadata/site_boundary_acceptance.csv", "metadata/study_area_manifest.csv", *documents]
-    inputs = {path: (ROOT / path).read_bytes() for path in paths}
+    from .progress import emit
+    inputs = {}
+    for index, path in enumerate(paths):
+        emit(progress, "M0", "读取协议与登记", done=index, total=len(paths), unit="文件",
+             operation="读取", path=ROOT / path)
+        inputs[path] = (ROOT / path).read_bytes()
     boundary_path = "metadata/study_area_rectangle.geojson"
     if (ROOT / boundary_path).is_file():
         inputs[boundary_path] = (ROOT / boundary_path).read_bytes()
@@ -148,6 +154,7 @@ def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
     with NamedTemporaryFile(mode="w", encoding="utf-8", dir=log_dir, delete=False, suffix=".tmp") as handle:
         temporary = Path(handle.name)
     try:
+        emit(progress, "M0", "写入审计日志", operation="写入", path=destination)
         temporary.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
         temporary.replace(destination)
     finally:
@@ -165,7 +172,7 @@ def run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
 
 def run_module(module_id, config_path=DEFAULT_CONFIG, run_id=None, run_alias=None,
                resume=True, overwrite_frozen=False, *, product_combo=None,
-               variant="main", dry_run=False, freeze=False, progress=None, runtime=None):
+               variant="main", dry_run=False, freeze=False, progress=None, runtime=None, inherit_from=None, inherit_through="M6"):
     """统一运行入口。预检只读，正式执行须匹配所选模块的冻结契约。"""
     from .runtime import resolve_runtime
 
@@ -190,6 +197,13 @@ def run_module(module_id, config_path=DEFAULT_CONFIG, run_id=None, run_alias=Non
             "product_combo": product, "variant": variant, "resume": resume, "runtime": resources}
     if freeze and (dry_run or modules != ["M0"]):
         raise ValueError("正式冻结只能用于单独运行 M0，且不能与预检同时使用。")
+    if inherit_from is not None:
+        if not freeze or modules != ["M0"]:
+            raise ValueError("继承上游只能在新别名单独冻结M0时登记。")
+        from .inherit_upstream import selected_modules
+        selected_modules(inherit_through)
+        plan["inherit_from"] = validate_alias(inherit_from)
+        plan["inherit_through"] = inherit_through
     if dry_run:
         return plan
     from contextlib import ExitStack
@@ -214,7 +228,22 @@ def execute_plan(plan, config_path, params, matrix, params_bytes, matrix_bytes, 
         from .progress import emit
 
         emit(progress, "M0", "审计协议与登记")
-        result = run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, freeze)
+        if plan.get("inherit_from"):
+            from .inherit_upstream import source_context, prepare_inheritance, selected_modules, check_source_receipts
+            from src.M1.scr_audit_era5land import digest
+            source, _ = source_context(ROOT, plan, config_path, params, plan["inherit_from"], digest)
+            check_source_receipts(ROOT, source, params, digest, selected_modules(plan["inherit_through"]))
+        existing = ROOT / params["output"]["logs"] / plan["run_alias"] / "module_io_M0.json"
+        if plan.get("inherit_from") and existing.is_file():
+            # 冻结已建立时，复核身份并幂等恢复继承登记，不重置模块状态。
+            inherited = prepare_inheritance(ROOT, plan, config_path, params, plan["inherit_from"], digest)
+            emit(progress, "M0", "已恢复只读继承", state="passed")
+            return {**plan, "run_id": inherited["run_id"], "inheritance": inherited,
+                    "m0_audit": {"status": "passed", "formal_freeze_written": True}}
+        result = run_m0_audit(plan, config_path, params, matrix, params_bytes, matrix_bytes, freeze, progress)
+        if plan.get("inherit_from") and result["m0_audit"].get("formal_freeze_written"):
+            emit(progress, "M0", "核验并登记只读上游继承")
+            result["inheritance"] = prepare_inheritance(ROOT, plan, config_path, params, plan["inherit_from"], digest)
         emit(progress, "M0", "协议审计结束", state=result["m0_audit"]["status"])
         return result
     if modules in (["M0", "M1"], ["M0", "M1", "M2"]):
@@ -244,6 +273,9 @@ def wizard(args, panel):
         plan_modules(dag, modules)
         return modules
 
+    args.inherit_from = None
+    args.inherit_through = "M6"
+
     def choose_scope():
         target = panel.menu("选择运行范围", (
             ("route1", "路线一主分析", "M0–M7、M9–M10"),
@@ -252,8 +284,21 @@ def wizard(args, panel):
         ), "full", section="01/05  运行范围")
         args.modules = [target]
         if target == "custom":
-            args.modules = panel.ask("输入模块编号", scope, section="01/05  运行范围",
-                                     details=names, hint="例如 M4, M6，可用空格或中英文逗号分隔")
+            selected = set()
+            while True:
+                choices = tuple((key, f"{'☑' if key in selected else '☐'} {key} {info['name']}", "选择或取消")
+                                for key, info in dag["modules"].items())
+                chosen = panel.menu("选择目标模块（可多选）", (*choices, ("done", "完成选择", "自动包含上游依赖")),
+                                    "done" if selected else "M7", section="01/05  运行范围")
+                if chosen == "done":
+                    if selected:
+                        break
+                    continue
+                if chosen in selected:
+                    selected.remove(chosen)
+                else:
+                    selected.add(chosen)
+            args.modules = [key for key in dag["modules"] if key in selected]
 
     def choose_version():
         args.run_alias = panel.ask("输入运行别名", validate_alias, section="02/05  运行版本",
@@ -261,6 +306,37 @@ def wizard(args, panel):
         run_logs = ROOT / params["output"]["logs"] / args.run_alias
         status = run_logs / "module_status.csv"
         args.new = not status.is_file()
+        args.inherit_from = None
+        targets = dag["targets"].get(args.modules[0], args.modules)
+        ordered = plan_modules(dag, targets)
+        index_path = ROOT / "metadata/run_index.csv"
+        candidates = []
+        if args.new and 4 <= len(ordered) <= 8 and ordered == [f"M{i}" for i in range(len(ordered))] and index_path.is_file():
+            with index_path.open(encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    alias = row.get("run_alias", "")
+                    try:
+                        validate_alias(alias)
+                    except ValueError:
+                        continue
+                    source_logs = ROOT / params["output"]["logs"] / alias
+                    available = []
+                    for i in range(1, min(6, len(ordered) - 2) + 1):
+                        receipt = source_logs / f"module_io_M{i}.json"
+                        try:
+                            data = json.loads(receipt.read_bytes())
+                            if data.get("status") not in ({"passed", "descriptive_only"} if i == 6 else {"passed"}):
+                                break
+                        except (OSError, ValueError):
+                            break
+                        available.append(f"M{i}")
+                    if len(available) >= 2 and alias != args.run_alias:
+                        candidates.append((alias, available))
+        if candidates and panel.menu("选择上游数据", (("new", "从头运行", "先冻结 M0"), ("reuse", "复用已有运行", "验证后只读接力")), "reuse", section="02/05  运行版本") == "reuse":
+            args.inherit_from = panel.menu("选择来源别名", tuple((alias, alias, f"可用 M1–{available[-1]}") for alias, available in candidates), candidates[0][0], section="02/05  运行版本")
+            available = dict(candidates)[args.inherit_from]
+            options = tuple((module, f"复用至 {module}", f"从 M{int(module[1:]) + 1} 开始执行") for module in available[1:])
+            args.inherit_through = panel.menu("选择复用终点", options, options[-1][0], section="02/05  运行版本")
         if status.is_file() and re.search(r",(not_run|failed)\b", status.read_text(encoding="utf-8-sig")):
             panel.menu("发现同名未完成记录", (
                 ("resume", "续接已有运行", "使用该别名和现有回执"),
@@ -269,7 +345,15 @@ def wizard(args, panel):
 
     def choose_data():
         products = params["products"]
-        args.product_combo = products["main"]
+        source_record = {}
+        if args.inherit_from:
+            source_path = ROOT / params["output"]["outputs"] / args.inherit_from / "protocol_freeze.json"
+            try:
+                source_record = json.loads(source_path.read_bytes())
+            except (OSError, ValueError):
+                raise ValueError("来源别名缺少有效的 M0 冻结记录。") from None
+        source_product = source_record.get("product_combo", products["main"])
+        args.product_combo = source_product if source_product in products["combinations"] else products["main"]
         if len(products["combinations"]) > 1:
             product_names = {"era5land": "ERA5-Land", "gldas21": "GLDAS-2.1 Noah", "chirps20": "CHIRPS v2.0"}
             options = []
@@ -277,20 +361,16 @@ def wizard(args, panel):
                 land, precip = key.split("__")
                 description = f"陆面 {product_names.get(land, land)} / 降水 {product_names.get(precip, precip)}"
                 options.append((key, "主分析" if key == products["main"] else "稳健性复算", description))
-            args.product_combo = panel.menu("选择陆面与降水来源", options, products["main"],
+            args.product_combo = panel.menu("选择陆面与降水来源", options, args.product_combo,
                                             section="03/05  数据与规范")
         variants = matrix["selectable_variants"]
         if len(variants) > 1:
             args.variant = panel.menu("选择分析方案（M0冻结与后续执行须一致）",
-                                      variant_options(matrix), variants[0],
+                                      variant_options(matrix), source_record.get("variant") if source_record.get("variant") in variants else variants[0],
                                       section="03/05  数据与规范")
 
     def choose_resources():
-        args.progress = panel.menu("选择运行阶段的进度显示", (
-            ("auto", "自动切换", "支持光标更新时显示彩色面板，重定向时使用文本"),
-            ("panel", "彩色实时面板", "要求终端支持光标更新"),
-            ("plain", "逐行文本", "适用于管道、日志收集和 CI"),
-        ), "auto", section="04/05  资源与显示", check=check_progress)
+        args.progress = "auto"
         profile = panel.menu("选择本机运行档位", (
             ("auto", "自动", "根据可用内存限制进程和读盘并发"),
             ("low", "低占用", "最多 2 个工作进程、4 GiB 内存、1 路读取"),
@@ -327,7 +407,9 @@ def wizard(args, panel):
                    ("freeze", "正式冻结 M0", "审计通过后封存协议并登记运行编号")) if m0_audit else (
             ("start", "开始预检", "检查选项与依赖"),)
         if not m0_audit:
-            if (run_logs / "module_io_M0.json").is_file():
+            if args.inherit_from:
+                actions = (("execute", "冻结并开始接力", "校验来源后创建新身份并执行"),)
+            elif (run_logs / "module_io_M0.json").is_file():
                 actions = (("execute", "执行已选模块", "使用同一 M0 冻结别名"), *actions)
             else:
                 actions = (("start", "开始预检", "此别名尚未正式冻结 M0。请先单独选择 M0 并正式冻结，再用同一别名执行"),)
@@ -337,6 +419,7 @@ def wizard(args, panel):
             ("cancel", "退出向导", "结束本次操作"),
         ), section="05/05  确认计划", check=confirm, details=(
             f"模块顺序  {' → '.join(ordered)}",
+            f"上游来源  {args.inherit_from}（复用 M1–{args.inherit_through}）" if args.inherit_from else "上游来源  当前别名",
             f"运行版本  {args.run_alias}（{'全新' if args.new else '续接现有别名'}）",
             f"数据组合  {args.product_combo}    方案  {matrix.get('variant_labels', {}).get(args.variant, {}).get('label', args.variant)} ({args.variant})",
             *runtime_lines(resources),
@@ -356,7 +439,8 @@ def wizard(args, panel):
         try:
             revisit = steps[index]()
         except WizardBack:
-            index = max(0, index - 1)
+            panel.rewind()
+            index = 0
             editing = False
         else:
             if revisit is not None:
@@ -390,10 +474,12 @@ def main(argv=None):
     parser.add_argument("--run-alias", help="必填运行别名")
     parser.add_argument("--run-id", help="已计算的协议身份")
     parser.add_argument("--product-combo", help="已登记产品组合")
-    parser.add_argument("--variant", default="main", help="已放行规范变体")
+    parser.add_argument("--variant", default="lai_four_of_five", help="已放行规范变体")
     parser.add_argument("--new", action="store_true", help="选择全新运行")
     parser.add_argument("--dry-run", action="store_true", help="仅校验运行计划")
     parser.add_argument("--freeze", action="store_true", help="单独运行 M0 并正式冻结协议")
+    parser.add_argument("--inherit-from", help="接力来源别名（创建新 M0 冻结后运行）")
+    parser.add_argument("--inherit-through", choices=["M2", "M3", "M4", "M5", "M6"], default="M6", help="连续复用至指定上游模块")
     parser.add_argument("--progress", choices=["auto", "panel", "plain"], default="auto", help="进度显示模式")
     parser.add_argument("--runtime-profile", choices=["auto", "low", "custom"], default="auto", help="本机运行档位")
     parser.add_argument("--workers", type=int, help="自定义档工作进程上限")
@@ -425,7 +511,7 @@ def main(argv=None):
             snapshot = meter.snapshot()
             meter.observe(snapshot)
             event = snapshot["event"]
-            key = (event.module, event.stage, event.state, snapshot["terminal"])
+            key = (event.module, event.stage, event.state, event.operation, event.path, snapshot["terminal"])
             if status.panel.live is None:
                 display_key = (key, int(snapshot["elapsed"] // 30))
             else:
@@ -447,6 +533,18 @@ def main(argv=None):
             if status.panel.live is None:
                 meter.on_stage_change = render
                 sys.stderr.write("\n".join(runtime_lines(resources)) + "\n")
+            if args.inherit_from and not args.dry_run:
+                selected = plan_modules(load_config(ROOT / "workflow/dag.yaml"),
+                    load_config(ROOT / "workflow/dag.yaml")["targets"].get(targets, [targets]) if isinstance(targets, str) else targets)
+                end = int(args.inherit_through[1:])
+                if selected != [f"M{i}" for i in range(len(selected))] or not 4 <= len(selected) <= 8 or end >= len(selected) - 1:
+                    raise ValueError("接力执行目标须为继承终点之后的 M3–M7。")
+                prepared = run_module("M0", args.config_path, args.run_id, args.run_alias, True,
+                    product_combo=args.product_combo, variant=args.variant, freeze=True, progress=meter,
+                    runtime=args.runtime, inherit_from=args.inherit_from, inherit_through=args.inherit_through)
+                if not prepared.get("m0_audit", {}).get("formal_freeze_written"):
+                    raise ValueError("M0 冻结未放行，未执行接力。")
+                args.new = False
             plan = run_module(targets, args.config_path, args.run_id, args.run_alias,
                               not args.new, product_combo=args.product_combo,
                               variant=args.variant, dry_run=args.dry_run, freeze=args.freeze,
@@ -471,20 +569,31 @@ def main(argv=None):
             render()
         report = plan.get("m0_audit")
         stages = plan.get("module_status")
-        if stages is not None:
+        if stages is not None and not (interactive and sys.stdout.isatty()):
             for stage, outcome in stages.items():
                 sys.stderr.write(f"{stage} 状态 {outcome}\n")
             sys.stderr.write(f"M1 报告位于 {plan['m1_reports']}\n")
-        elif report is None:
+        elif stages is None and report is None:
             sys.stderr.write(f"计划预检完成，共 {len(plan['modules'])} 个模块。\n")
-        else:
+        elif report is not None:
             sys.stderr.write(f"M0 冻结前审计完成，日志位于 {plan['audit_log']}\n")
             if report["formal_freeze_written"]:
                 sys.stderr.write(f"M0 正式冻结完成，运行编号 {plan['run_id']}\n")
             for check in report["checks"]:
                 if check["status"] != "passed":
                     sys.stderr.write(f"  [{check['status']}] {check['detail']}\n")
-        sys.stdout.write(json.dumps(plan, ensure_ascii=False) + "\n")
+        if interactive and sys.stdout.isatty():
+            sys.stderr.write(f"\n运行摘要 · {plan['run_alias']}\n")
+            sys.stderr.write(f"  结果：{'失败' if failed else '完成'}\n")
+            if stages:
+                from .progress import LABELS
+                for stage, outcome in stages.items():
+                    sys.stderr.write(f"  {stage}  {LABELS.get(outcome, outcome)}\n")
+            for key, label in (("downstream", "冻结交接"), ("m1_reports", "审计报告"), ("audit_log", "审计日志")):
+                if plan.get(key):
+                    sys.stderr.write(f"  {label}：{plan[key]}\n")
+        else:
+            sys.stdout.write(json.dumps(plan, ensure_ascii=False) + "\n")
         if stages is not None and any(outcome == "failed" or (outcome == "exited" and stage != "M8")
                                       for stage, outcome in stages.items()):
             return 1
